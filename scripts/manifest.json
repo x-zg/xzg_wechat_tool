@@ -1,0 +1,12 @@
+{
+  "name": "微信自动化工具",
+  "version": "1.0.0",
+  "description": "微信客户端自动化控制工具",
+  "entry_point": "__init__.py",
+  "class_name": "WeChatSkill",
+  "permissions": [
+    "network",
+    "file_system",
+    "ui_automation"
+  ]
+}
