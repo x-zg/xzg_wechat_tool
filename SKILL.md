@@ -1,50 +1,118 @@
 ﻿---
 name: wechat-tool
 version: 1.0.0
-description: 微信客户端自动化控制工具
+description: 微信客户端自动化控制工具，支持截图、OCR、点击、输入、滚动和消息发送
 ---
 
-# 微信自动化技能
-控制 Windows 微信客户端的自动化工具。
+# WeChat Tool
 
-## 快速指南
+Windows 微信客户端自动化控制工具。
 
-### 打开/唤醒微信
-当用户说"打开微信"、"唤醒微信"、"显示微信"时，执行截图操作即可自动唤醒：
+## 功能
+
+- 📸 截图：截取微信窗口或屏幕
+- �� OCR：识别图片中的文字
+- 👆 点击：点击指定坐标
+- ⌨️ 输入：在指定位置输入文本
+- 📜 滚动：上下滚动页面
+- 📖 上下文：获取页面 OCR 结果
+- ✉️ 消息：给指定联系人发送消息
+
+## 安装
+
+需要先安装 Python 依赖：
+
 ```bash
-python {baseDir}/scripts/main.py screenshot "{}"
+pip install pyautogui pygetwindow pillow pyperclip pytesseract opencv-python
 ```
 
-> 技能会自动检测微信是否打开，未打开则使用 Ctrl+Alt+W 唤醒。
+## 使用方法
 
-### 查看微信界面
-```bash
-python {baseDir}/scripts/main.py screenshot '{"save_path": "wechat_current.png"}'
+### 1. 获取微信状态
+
+```python
+from agent import get_wechat_status
+
+status = get_wechat_status()
+print(status)
 ```
 
-### 识别界面内容
-```bash
-python {baseDir}/scripts/main.py get_ocr_result '{"include_all": true}'
-```
-返回所有文字及其坐标位置。
+### 2. 截取微信窗口
 
-### 点击指定位置
-```bash
-python {baseDir}/scripts/main.py click_coordinate '{"x": 200, "y": 150}'
+```python
+from agent import capture_window
+
+img = capture_window()
+img.save("wechat_window.png")
 ```
 
-### 输入文字并发送
-```bash
-python {baseDir}/scripts/main.py click_and_type '{"content": "消息内容", "auto_locate_input": true, "send_enter": true}'
+### 3. 发送消息到当前聊天窗口
+
+```python
+from agent import send_message_to_current
+
+# 给当前已打开的聊天窗口发送消息
+success, err = send_message_to_current("你好！")
+
+if success:
+    print("消息发送成功")
+else:
+    print(f"发送失败: {err}")
 ```
 
-### 滚动页面
-```bash
-python {baseDir}/scripts/main.py scroll '{"direction": "down", "clicks": 3}'
+### 4. 截图 + OCR
+
+```python
+from agent import capture_window, get_ocr_result
+
+img = capture_window()
+results = get_ocr_result(img)
 ```
 
-## 重要说明
+### 5. 点击坐标
 
-1. **自动唤醒**：任何操作都会自动唤醒微信窗口
-2. **微信必须已登录**：首次使用需手动登录微信
-3. **Windows 专用**：仅支持 Windows 系统
+```python
+from agent import click_coordinate
+
+click_coordinate(100, 200)
+```
+
+### 6. 输入文本
+
+```python
+from agent import click_and_type
+
+click_and_type("这是输入的文本", send_enter=True)
+```
+
+### 7. 滚动页面
+
+```python
+from agent import scroll
+
+# 向下滚动
+scroll(direction="down", amount=300)
+
+# 向上滚动
+scroll(direction="up", amount=300)
+```
+
+## 注意事项
+
+1. 微信窗口需要保持打开状态
+2. 发送消息时会自动激活微信窗口
+3. 中文输入需要确保系统中文输入法正常工作
+4. **自动识别联系人**：不传 contact 参数时，会自动从当前微信窗口标题获取联系人名称
+
+## 文件结构
+
+```
+wechat-tool/
+ agent.py           # 主程序
+ app.py             # 微信自动化核心
+ OCR.py             # OCR 帮助类
+ ui_inspector.py    # UI 检查工具
+ SKILL.md           # 技能描述
+ _meta.json         # 元数据
+ requirements.txt   # Python 依赖
+```
