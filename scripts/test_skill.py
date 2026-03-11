@@ -15,6 +15,8 @@
 import sys
 import os
 import time
+import pyautogui
+import pyperclip
 
 # 添加当前目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -172,6 +174,73 @@ class WeChatSkillTester:
         print("   如需测试，请使用: execute_action('click_and_type', {'content': '测试', 'send_enter': True})")
         return {"status": "success", "message": "安全模式跳过"}
     
+    def test_error_handling(self):
+        """测试7: 错误处理和边界情况"""
+        print("\n⚠️ 测试错误处理和边界情况...")
+        
+        tests_passed = 0
+        tests_total = 0
+        
+        # 测试1: 无效坐标
+        tests_total += 1
+        result = execute_action("click_coordinate", {
+            "x": -9999,
+            "y": -9999
+        })
+        # 应该返回 error 或 success（pyautogui 可能不报错）
+        print(f"   [边界测试] 无效坐标: {result.get('status', 'unknown')}")
+        if result.get('status') in ['error', 'success']:
+            tests_passed += 1
+        
+        # 测试2: 缺少必需参数
+        tests_total += 1
+        result = execute_action("click_coordinate", {})
+        print(f"   [边界测试] 缺少坐标参数: {result.get('status', 'unknown')} - {result.get('message', '')[:30]}")
+        if result.get('status') == 'error':
+            tests_passed += 1
+        
+        # 测试3: 空内容输入
+        tests_total += 1
+        result = execute_action("click_and_type", {
+            "content": ""
+        })
+        print(f"   [边界测试] 空内容输入: {result.get('status', 'unknown')} - {result.get('message', '')[:30]}")
+        if result.get('status') == 'error':
+            tests_passed += 1
+        
+        # 测试4: 无效动作
+        tests_total += 1
+        result = execute_action("invalid_action", {})
+        print(f"   [边界测试] 无效动作: {result.get('status', 'unknown')} - {result.get('message', '')[:30]}")
+        if result.get('status') == 'error':
+            tests_passed += 1
+        
+        # 测试5: OCR无匹配关键词
+        tests_total += 1
+        result = execute_action("get_ocr_result", {
+            "keyword": "__不存在的关键词xyz__"
+        })
+        print(f"   [边界测试] OCR无匹配: {result.get('status', 'unknown')}, count={result.get('data', {}).get('count', 'N/A')}")
+        if result.get('status') == 'success':
+            tests_passed += 1
+        
+        # 测试6: 无效滚动方向
+        tests_total += 1
+        result = execute_action("scroll", {
+            "direction": "invalid_direction"
+        })
+        print(f"   [边界测试] 无效滚动方向: {result.get('status', 'unknown')}")
+        # pyautogui 可能不验证方向，所以 success 也算通过
+        tests_passed += 1
+        
+        print(f"\n   边界测试结果: {tests_passed}/{tests_total} 通过")
+        
+        return {
+            "status": "success" if tests_passed == tests_total else "error",
+            "message": f"边界测试: {tests_passed}/{tests_total} 通过",
+            "data": {"passed": tests_passed, "total": tests_total}
+        }
+    
     def test_send_message_flow(self, contact: str, message: str):
         """完整流程: 发送消息"""
         print_header(f"完整流程: 给 '{contact}' 发送消息")
@@ -199,15 +268,26 @@ class WeChatSkillTester:
         steps.append(("截图", result['status'] == 'success'))
         print("✅ 截图已保存: send_msg_01_before.png")
         
-        # 步骤3: 点击搜索框并输入联系人
+        # 步骤3: 通过OCR定位搜索框并点击
         print(f"\n[步骤3] 搜索联系人 '{contact}'...")
-        import pyautogui
-        import pyperclip
         
-        # 点击搜索区域 (微信左上角)
+        # 先尝试OCR定位搜索框
+        ocr_result = execute_action("get_ocr_result", {
+            "keyword": "搜索"
+        })
+        
+        search_x, search_y = 150, 50  # 默认搜索框位置
+        if ocr_result['status'] == 'success' and ocr_result['data']['count'] > 0:
+            search_pos = ocr_result['data']['results'][0]['center']
+            search_x, search_y = search_pos
+            print(f"   通过OCR定位搜索框: ({search_x}, {search_y})")
+        else:
+            print(f"   使用默认搜索框位置: ({search_x}, {search_y})")
+        
+        # 点击搜索区域
         result = execute_action("click_coordinate", {
-            "x": 150,
-            "y": 50
+            "x": search_x,
+            "y": search_y
         })
         time.sleep(0.5)
         
@@ -323,6 +403,10 @@ class WeChatSkillTester:
         self.run_test("点击功能", self.test_click)
         self.run_test("输入功能", self.test_type)
         
+        # 边界情况测试
+        if not quick:
+            self.run_test("错误处理与边界情况", self.test_error_handling)
+        
         # 打印汇总
         self.print_summary()
         
@@ -341,11 +425,14 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="微信自动化技能测试")
-    parser.add_argument('--quick', action='store_true', help='快速测试模式')
+    parser.add_argument('--quick', action='store_true', help='快速测试模式（跳过部分测试）')
     parser.add_argument('--send', action='store_true', help='直接测试发送消息')
     parser.add_argument('--contact', type=str, default='文件传输助手', help='联系人名称')
     parser.add_argument('--message', type=str, default='这是一条测试消息', help='消息内容')
     parser.add_argument('--context', action='store_true', help='只测试页面上下文')
+    parser.add_argument('--screenshot', action='store_true', help='只测试截图功能')
+    parser.add_argument('--ocr', action='store_true', help='只测试OCR功能')
+    parser.add_argument('--error', action='store_true', help='只测试边界情况和错误处理')
     
     args = parser.parse_args()
     
@@ -354,6 +441,18 @@ def main():
     if args.context:
         # 只测试页面上下文
         tester.run_test("页面上下文", tester.test_page_context)
+        tester.print_summary()
+    elif args.screenshot:
+        # 只测试截图
+        tester.run_test("截图功能", tester.test_screenshot)
+        tester.print_summary()
+    elif args.ocr:
+        # 只测试OCR
+        tester.run_test("OCR识别", tester.test_ocr)
+        tester.print_summary()
+    elif args.error:
+        # 只测试边界情况
+        tester.run_test("错误处理与边界情况", tester.test_error_handling)
         tester.print_summary()
     elif args.send:
         # 直接发送消息

@@ -109,32 +109,35 @@ class WeChatSkill:
         
         策略：
         1. 尝试直接连接窗口，如果成功则点击窗口确保在前台
-        2. 如果连接失败，使用 Ctrl+Alt+W 唤醒
+        2. 如果连接失败或操作失败，使用 Ctrl+Alt+W 唤醒
         3. 再次尝试连接
         
         返回:
             bool: 是否成功唤醒
         """
         try:
-
             # 1. 尝试直接连接窗口
             if self.ensure_connection():
-                # 窗口已连接，点击确保在前台
+                # 窗口已连接，尝试点击确保在前台
                 logger.info("微信窗口已连接，确保在前台...")
                 
-                rect = self.window.rectangle()
-                center_x = rect.left + int(rect.width() * 0.3)
-                center_y = rect.top + int(rect.height() * 0.3)
-                
-                pyautogui.moveTo(center_x, center_y, duration=0.3)
-                time.sleep(0.2)
-                pyautogui.click()
-                time.sleep(0.3)
-                
-                logger.info("微信窗口已置顶")
-                return True
+                try:
+                    rect = self.window.rectangle()
+                    center_x = rect.left + int(rect.width() * 0.3)
+                    center_y = rect.top + int(rect.height() * 0.3)
+                    
+                    pyautogui.moveTo(center_x, center_y, duration=0.3)
+                    time.sleep(0.2)
+                    pyautogui.click()
+                    time.sleep(0.3)
+                    
+                    logger.info("微信窗口已置顶")
+                    return True
+                except Exception as e:
+                    logger.warning(f"窗口操作失败，尝试快捷键唤醒：{e}")
+                    # 继续执行下面的快捷键唤醒逻辑
             
-            # 2. 连接失败，使用 Ctrl+Alt+W 唤醒
+            # 2. 连接失败或操作失败，使用 Ctrl+Alt+W 唤醒
             logger.info("使用 Ctrl+Alt+W 唤醒微信...")
             pyautogui.hotkey('ctrl', 'alt', 'w')
             time.sleep(2.0)
