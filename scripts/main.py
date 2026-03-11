@@ -693,6 +693,22 @@ def execute_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    # 测试代码
-    print("微信自动化精简版 - 核心功能")
-    print(f"支持的动作：{WeChatSkill.SUPPORTED_ACTIONS}")
+    import argparse
+    import json
+    
+    parser = argparse.ArgumentParser(description="微信自动化工具")
+    parser.add_argument("action", help="执行动作", 
+                        choices=["screenshot", "get_ocr_result", "click_coordinate", 
+                                 "click_and_type", "scroll", "get_page_context"])
+    parser.add_argument("params", nargs="?", default="{}", help="JSON 格式参数")
+    
+    args = parser.parse_args()
+    
+    try:
+        params = json.loads(args.params) if args.params else {}
+    except json.JSONDecodeError:
+        print(json.dumps({"status": "error", "message": "参数 JSON 格式错误"}))
+        sys.exit(1)
+    
+    result = execute_action(args.action, params)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
