@@ -6,6 +6,13 @@
 # @Software: PyCharm
 
 import sys
+import io
+
+# 强制设置 stdout 编码为 UTF-8（解决 Windows 控制台编码问题）
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import base64
 import time
 import logging
@@ -23,6 +30,8 @@ from pywinauto import Application
 import win32gui
 import win32ui
 import win32con
+import win32api
+import win32process
 import numpy as np
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -92,31 +101,58 @@ class WeChatManager:
     def _bring_window_to_front(self, w) -> bool:
         """将窗口置顶并激活"""
         try:
-            # 方法1: pygetwindow 激活
+            # 获取窗口句柄（优先使用 pygetwindow 的 _hWnd 属性）
+            hwnd = None
+            if hasattr(w, '_hWnd'):
+                hwnd = w._hWnd
+            else:
+                # 回退：尝试通过标题查找
+                hwnd = win32gui.FindWindow(None, w.title)
+            
+            if not hwnd:
+                logger.warning("无法获取窗口句柄")
+                return False
+            
+            # 方法1: 如果窗口最小化，先恢复
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.1)
+            
+            # 方法2: 使用 AttachThreadInput 绕过 SetForegroundWindow 限制
+            foreground_hwnd = win32gui.GetForegroundWindow()
+            foreground_thread = win32process.GetWindowThreadProcessId(foreground_hwnd)[0]
+            current_thread = win32api.GetCurrentThreadId()
+            target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
+            
+            # 附加线程输入
+            if current_thread != target_thread:
+                win32gui.AttachThreadInput(current_thread, target_thread, True)
+                if foreground_thread != target_thread:
+                    win32gui.AttachThreadInput(foreground_thread, target_thread, True)
+            
+            # 置顶窗口
+            win32gui.SetForegroundWindow(hwnd)
+            win32gui.BringWindowToTop(hwnd)
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            
+            # 解除线程附加
+            if current_thread != target_thread:
+                win32gui.AttachThreadInput(current_thread, target_thread, False)
+                if foreground_thread != target_thread:
+                    win32gui.AttachThreadInput(foreground_thread, target_thread, False)
+            
+            time.sleep(0.2)
+            logger.debug(f"窗口已激活: hwnd={hwnd}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"激活窗口失败: {e}")
+            # 最后尝试 pygetwindow 方法
             try:
                 w.activate()
                 time.sleep(0.3)
+                return True
             except Exception:
-                pass
-            
-            # 方法2: 使用 win32gui 强制置顶
-            try:
-                hwnd = win32gui.FindWindow(None, w.title)
-                if hwnd:
-                    # 如果窗口最小化，先恢复
-                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                    # 置顶窗口
-                    win32gui.SetForegroundWindow(hwnd)
-                    # 确保窗口在最前
-                    win32gui.BringWindowToTop(hwnd)
-                    time.sleep(0.3)
-            except Exception:
-                pass
-            
-            return True
-        except Exception as e:
-            logger.debug(f"激活窗口失败: {e}")
-            return False
+                return False
     
     def get_main_window(self, force_refresh: bool = False, activate_first: bool = False) -> Optional[Any]:
         """获取微信主窗口（返回 pygetwindow 窗口对象）"""
