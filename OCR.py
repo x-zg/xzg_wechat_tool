@@ -1,10 +1,10 @@
 #! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-优化版 OCR 模块 - 不依赖 pywinauto
-- 使用 PIL 直接截图
-- 简化图像预处理
-- 快速模式
+优化版 OCR 模块
+- 增强图像预处理
+- 优化 OCR 参数
+- 提高识别准确率
 """
 import cv2
 import numpy as np
@@ -14,94 +14,64 @@ from pathlib import Path
 from PIL import ImageGrab
 from rapidocr import RapidOCR
 
-# 配置日志（减少输出）
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def init_ocr_engine():
-    """初始化 OCR 引擎（快速模式）"""
-    try:
-        # 使用默认参数初始化
-        engine = RapidOCR()
-        
-        # 预热
-        test_img = np.ones((100, 100, 3), dtype=np.uint8) * 255
-        engine(test_img, use_det=True, use_cls=False, use_rec=True)
-        
-        return engine
-    except Exception as e:
-        logger.error(f"OCR引擎初始化失败：{e}")
-        raise
-
-
-# 全局引擎（单例，懒加载）
 _engine = None
 
 def get_engine():
-    """获取 OCR 引擎"""
+    """获取 OCR 引擎（单例）"""
     global _engine
     if _engine is None:
-        _engine = init_ocr_engine()
+        _engine = RapidOCR()
+        # 预热
+        test_img = np.ones((100, 100, 3), dtype=np.uint8) * 255
+        _engine(test_img, use_det=True, use_cls=False, use_rec=True)
     return _engine
 
 
-def ocr_endpoint(win, word=None, fast_mode=True):
+def ocr_endpoint(win, word=None, fast_mode=False):
     """
-    优化版 OCR 识别（不依赖 pywinauto）
+    OCR 识别
     
     Args:
-        win: 窗口对象（pygetwindow 或 pywinauto）
+        win: 窗口对象
         word: 搜索关键词（可选）
-        fast_mode: 快速模式
+        fast_mode: 快速模式（跳过预处理）
     
     Returns:
-        list: OCR 结果列表
+        list: OCR 结果
     """
-    global _engine
-    
     try:
         start_time = time.time()
         
-        # 强制重新初始化 OCR 引擎（清除可能的缓存）
-        _engine = None
-        
-        # 1. 获取窗口位置和截图（始终获取最新截图）
+        # 1. 获取截图
         win_left, win_top, win_right, win_bottom, screenshot = _get_window_screenshot(win)
         
         if screenshot is None:
             logger.warning("截图失败")
             return []
         
-        # 保存调试截图（可选，用于验证是否获取最新截图）
-        debug_path = Path(__file__).parent / "debug_ocr_screenshot.png"
-        cv2.imwrite(str(debug_path), screenshot)
-        print(f"[OCR] 调试截图已保存: {debug_path}")
-        
         # 2. 图像预处理
         if fast_mode:
             img = _preprocess_fast(screenshot)
         else:
-            img = _preprocess_full(screenshot)
+            img = _preprocess_enhanced(screenshot)
         
-        # 3. OCR 识别（重新获取引擎）
+        # 3. OCR 识别
         engine = get_engine()
         ocr_result = engine(img, use_det=True, use_cls=False, use_rec=True)
         
-        # 解析 RapidOCR 结果
+        # 4. 解析结果
         if ocr_result is None:
             return []
         
-        # RapidOCR 返回 RapidOCROutput 对象
-        # ocr_result.boxes: 检测框
-        # ocr_result.txts: 文本列表
-        # ocr_result.scores: 置信度列表
         if hasattr(ocr_result, 'boxes') and ocr_result.boxes is not None:
             boxes = ocr_result.boxes
             txts = ocr_result.txts if ocr_result.txts else []
             scores = ocr_result.scores if ocr_result.scores else []
         elif isinstance(ocr_result, tuple) and len(ocr_result) > 0:
-            # 旧版本格式
             raw_results = ocr_result[0]
             if raw_results is None:
                 return []
@@ -114,6 +84,7 @@ def ocr_endpoint(win, word=None, fast_mode=True):
         if len(boxes) == 0:
             return []
         
+        # 5. 处理结果
         processed_items = []
         for i in range(len(boxes)):
             try:
@@ -121,7 +92,7 @@ def ocr_endpoint(win, word=None, fast_mode=True):
                 text = txts[i] if i < len(txts) else ""
                 score = scores[i] if i < len(scores) else 0.0
                 
-                if not text:
+                if not text or score < 0.3:
                     continue
                 
                 box_np = np.array(box, dtype=np.float32).reshape(-1, 2)
@@ -151,9 +122,9 @@ def ocr_endpoint(win, word=None, fast_mode=True):
                 continue
         
         elapsed = time.time() - start_time
-        logger.debug(f"OCR 完成，耗时: {elapsed:.2f}s，识别到 {len(processed_items)} 个文本区域")
+        logger.info(f"OCR 完成: {elapsed:.2f}s, 识别到 {len(processed_items)} 个文本")
         
-        # 5. 关键词匹配
+        # 6. 关键词匹配
         if word is None:
             return processed_items
         
@@ -165,112 +136,23 @@ def ocr_endpoint(win, word=None, fast_mode=True):
 
 
 def _get_window_screenshot(win):
-    """获取窗口截图（即使被遮挡也能正确截取，始终获取最新截图）"""
-    import time as time_module
-    capture_time = time_module.strftime('%H:%M:%S')
-    
+    """获取窗口截图"""
     try:
-        # 尝试 pygetwindow 窗口
         if hasattr(win, 'left'):
             left, top = win.left, win.top
             right, bottom = win.right, win.bottom
             
-            # 优先使用 ImageGrab 截取屏幕（保证最新）
-            try:
-                bbox = (left, top, right, bottom)
-                img = ImageGrab.grab(bbox=bbox)
-                screenshot = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                print(f"[OCR] 截图成功 - 时间: {capture_time}, 区域: ({left},{top})-({right},{bottom})")
-                return (left, top, right, bottom, screenshot)
-            except Exception as e:
-                logger.debug(f"ImageGrab 截图失败: {e}")
-            
-            # 回退：使用 win32gui 截取窗口
-            screenshot = _capture_window_win32(win.title)
-            if screenshot is not None:
-                print(f"[OCR] win32截图成功 - 时间: {capture_time}")
-                return (left, top, right, bottom, screenshot)
-        
-        # 尝试 pywinauto 窗口（使用 XZGUtil）
-        try:
-            from XZGUtil.ImagePositioning import window_rectangle
-            screenshot = window_rectangle(win)
-            
-            # 获取窗口位置
-            if hasattr(win, 'wrapper_object'):
-                elem = win.wrapper_object()
-                rect = elem.rectangle()
-            else:
-                return (0, 0, 0, 0, screenshot)
-            
-            left, top = rect.left, rect.top
-            right, bottom = rect.right, rect.bottom
+            bbox = (left, top, right, bottom)
+            img = ImageGrab.grab(bbox=bbox)
+            screenshot = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
             
             return (left, top, right, bottom, screenshot)
-        except Exception as e:
-            logger.debug(f"pywinauto 截图失败: {e}")
-            return (0, 0, 0, 0, None)
+        
+        return (0, 0, 0, 0, None)
             
     except Exception as e:
-        logger.debug(f"截图失败: {e}")
+        logger.error(f"截图失败: {e}")
         return (0, 0, 0, 0, None)
-
-
-def _capture_window_win32(window_title: str = None):
-    """使用 win32 API 截取窗口（即使被遮挡）"""
-    try:
-        import win32gui
-        import win32ui
-        import win32con
-        
-        # 查找窗口句柄
-        hwnd = None
-        if window_title:
-            hwnd = win32gui.FindWindow(None, window_title)
-        if not hwnd:
-            hwnd = win32gui.FindWindow("WeChatMainWndForPC", None)
-        
-        if not hwnd:
-            return None
-        
-        # 获取窗口尺寸
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width = right - left
-        height = bottom - top
-        
-        if width <= 0 or height <= 0:
-            return None
-        
-        # 获取窗口 DC
-        hwndDC = win32gui.GetWindowDC(hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
-        
-        # 创建位图
-        saveBitMap = win32ui.CreateBitmap()
-        saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
-        saveDC.SelectObject(saveBitMap)
-        
-        # 截取窗口内容
-        saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
-        
-        # 转换为 numpy 数组
-        bmpinfo = saveBitMap.GetInfo()
-        bmpstr = saveBitMap.GetBitmapBits(True)
-        img = np.frombuffer(bmpstr, dtype=np.uint8)
-        img = img.reshape((bmpinfo['bmHeight'], bmpinfo['bmWidth'], 4))
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        
-        # 清理资源
-        win32gui.DeleteObject(saveBitMap.GetHandle())
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(hwnd, hwndDC)
-        
-        return img
-    except Exception as e:
-        logger.debug(f"win32 截图失败: {e}")
-        return None
 
 
 def _preprocess_fast(img):
@@ -280,18 +162,42 @@ def _preprocess_fast(img):
     elif img.ndim == 3 and img.shape[2] == 4:
         return cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
     elif img.ndim == 3 and img.shape[2] == 3:
-        # BGR 转 RGB
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img
 
 
-def _preprocess_full(img):
-    """完整预处理"""
-    img_rgb = _preprocess_fast(img)
+def _preprocess_enhanced(img):
+    """增强预处理（提高识别率）"""
+    # 1. 转换格式
+    if img.ndim == 2:
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    elif img.ndim == 3 and img.shape[2] == 4:
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
+    elif img.ndim == 3 and img.shape[2] == 3:
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    else:
+        img_rgb = img
+    
+    # 2. 转灰度
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+    
+    # 3. 去噪（双边滤波保留边缘）
+    denoised = cv2.bilateralFilter(gray, 9, 75, 75)
+    
+    # 4. 对比度增强（CLAHE）
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(denoised)
+    
+    # 5. 锐化
+    kernel_sharpen = np.array([
+        [-1, -1, -1],
+        [-1,  9, -1],
+        [-1, -1, -1]
+    ])
+    sharpened = cv2.filter2D(enhanced, -1, kernel_sharpen)
+    
+    # 6. 转回 RGB
+    return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB)
 
 
 def _match_keyword(items, word):
@@ -307,7 +213,6 @@ def _match_keyword(items, word):
         if not text or target_word not in text:
             continue
         
-        # 精准匹配
         if text == target_word:
             matched.append({
                 'box': item['box'],
