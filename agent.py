@@ -59,15 +59,35 @@ class WeChatManager:
                     return w
         return None
     
+    def _is_window_visible(self, w) -> bool:
+        """检查窗口是否可见（不在最小化状态）"""
+        try:
+            # 检查窗口是否可见且不在最小化状态
+            # 最小化的窗口宽度或高度通常为 0 或很小
+            if w.width < 100 or w.height < 100:
+                return False
+            # 检查窗口是否在屏幕范围内
+            if w.left < -w.width or w.top < -w.height:
+                return False
+            return True
+        except Exception:
+            return False
+    
     def _wake_up_wechat(self) -> bool:
-        """唤醒微信窗口（Ctrl+Alt+W）"""
+        """唤醒微信窗口（Ctrl+Alt+W），仅在窗口不可见时执行"""
+        # 先检查窗口是否已经可见
+        w = self._find_gw_window()
+        if w and self._is_window_visible(w):
+            logger.debug("窗口已可见，跳过唤醒")
+            return True
+        
         logger.debug("执行唤醒快捷键...")
         pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
         time.sleep(0.5)
         
         # 检查窗口是否出现
         w = self._find_gw_window()
-        return w is not None
+        return w is not None and self._is_window_visible(w)
     
     def _bring_window_to_front(self, w) -> bool:
         """将窗口置顶并激活"""
@@ -125,8 +145,8 @@ class WeChatManager:
         # 4. 查找窗口
         w = self._find_gw_window()
         
-        # 5. 如果没找到或需要激活，尝试唤醒
-        if not w or activate_first:
+        # 5. 如果窗口不可见或未找到，尝试唤醒
+        if not w or not self._is_window_visible(w):
             if not self._wake_up_wechat():
                 logger.warning("唤醒微信失败")
                 return None
@@ -137,7 +157,8 @@ class WeChatManager:
             return None
         
         # 6. 激活窗口（确保在前台）
-        self._bring_window_to_front(w)
+        if activate_first:
+            self._bring_window_to_front(w)
         
         logger.debug(f"找到窗口: {w.title}, 大小: {w.width}x{w.height}")
         
