@@ -105,7 +105,7 @@ class WeChatManager:
         """检查微信进程，返回 PID 列表"""
         try:
             processes = [p for p in psutil.process_iter(['pid', 'name'])
-                        if self.WECHAT_EXE in p.info['name']]
+                        if any(exe.lower() in p.info['name'].lower() for exe in self.WECHAT_EXE_NAMES)]
             return [p.info['pid'] for p in processes]
         except Exception as e:
             logger.error(f"检查进程失败: {e}")
@@ -116,8 +116,12 @@ class WeChatManager:
         for keyword in ["微信", "WeChat", "Weixin"]:
             windows = gw.getWindowsWithTitle(keyword)
             for w in windows:
-                if 500 < w.width < 2000:
+                # 放宽窗口尺寸限制：宽度 > 200 且高度 > 200
+                if w.width > 200 and w.height > 200:
+                    logger.debug(f"找到微信窗口: title={w.title}, size=({w.width}x{w.height})")
                     return w
+                else:
+                    logger.debug(f"跳过窗口(尺寸过小): title={w.title}, size=({w.width}x{w.height})")
         return None
     
     def _is_window_visible(self, w) -> bool:
@@ -193,8 +197,11 @@ class WeChatManager:
                 - 成功: (window_object, None)
                 - 失败: (None, error_message)
         """
+        logger.info("开始检查微信窗口状态...")
+        
         # 步骤1: 检查微信进程是否存在
         pid_list = self.check_process()
+        logger.info(f"微信进程检测结果: {pid_list}")
         
         if not pid_list:
             # 进程不存在
@@ -209,44 +216,58 @@ class WeChatManager:
             else:
                 return None, "微信未运行"
         
-        # 步骤2: 查找微信窗口
-        w = self._find_gw_window()
+        # 步骤2: 查找微信窗口（最多尝试 3 次）
+        w = None
+        for attempt in range(3):
+            w = self._find_gw_window()
+            if w:
+                break
+            logger.debug(f"未找到窗口 (尝试 {attempt + 1}/3)")
+            time.sleep(0.3)
         
         # 步骤3: 判断窗口状态并处理
         if not w:
-            # 窗口不存在（微信在托盘区），用快捷键唤醒
-            logger.debug("窗口不存在，尝试快捷键唤醒...")
-            pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
-            time.sleep(0.5)
-            w = self._find_gw_window()
+            # 窗口不存在（微信在托盘区），用快捷键唤醒（最多尝试 3 次）
+            logger.info("窗口不存在，尝试快捷键唤醒...")
+            for attempt in range(3):
+                pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
+                time.sleep(0.8)
+                w = self._find_gw_window()
+                if w:
+                    logger.info(f"快捷键唤醒成功 (尝试 {attempt + 1}/3)")
+                    break
+                logger.debug(f"快捷键唤醒未找到窗口 (尝试 {attempt + 1}/3)")
+            
             if not w:
-                return None, "无法唤醒微信窗口（可能在托盘区）"
+                return None, "无法唤醒微信窗口（可能在托盘区或快捷键无效）"
         
         # 步骤4: 获取窗口句柄
         hwnd = w._hWnd if hasattr(w, '_hWnd') else None
         if not hwnd:
             return None, "无法获取微信窗口句柄"
         
+        logger.info(f"找到微信窗口: hwnd={hwnd}, title={w.title}")
+        
         # 步骤5: 检查窗口是否最小化
         if win32gui.IsIconic(hwnd):
-            logger.debug("窗口已最小化，恢复窗口...")
+            logger.info("窗口已最小化，恢复窗口...")
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
             time.sleep(0.3)
         
-        # 步骤6: 激活窗口到前台
-        self._bring_window_to_front(w)
-        time.sleep(0.2)
-        
-        # 步骤7: 验证窗口是否真的在前台
-        foreground_hwnd = win32gui.GetForegroundWindow()
-        if foreground_hwnd != hwnd:
-            # 再次尝试激活
-            logger.debug("窗口未在前台，再次激活...")
+        # 步骤6: 激活窗口到前台（最多尝试 3 次）
+        for attempt in range(3):
             self._bring_window_to_front(w)
-            time.sleep(0.2)
+            time.sleep(0.3)
+            
+            # 步骤7: 验证窗口是否真的在前台
             foreground_hwnd = win32gui.GetForegroundWindow()
-            if foreground_hwnd != hwnd:
-                logger.warning("窗口激活可能失败，但继续操作")
+            if foreground_hwnd == hwnd:
+                logger.info("窗口已成功激活到前台")
+                break
+            
+            logger.debug(f"窗口未在前台 (尝试 {attempt + 1}/3)，hwnd={hwnd}, foreground={foreground_hwnd}")
+        else:
+            logger.warning("窗口激活可能失败，但继续操作")
         
         self._gw_window = w
         return w, None
