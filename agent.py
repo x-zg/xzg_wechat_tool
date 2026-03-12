@@ -298,9 +298,9 @@ class WeChatManager:
             return None
     
     def capture(self) -> Optional[Image.Image]:
-        """截取微信窗口（使用 win32 API，即使被遮挡也能正确截图）"""
-        # 先激活窗口（强制刷新，不使用缓存）
-        w = self.get_main_window(force_refresh=True, activate_first=True)
+        """截取微信窗口（使用 win32 API，支持自动启动）"""
+        # 先激活窗口（强制刷新，自动启动微信）
+        w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
         if not w:
             return None
         
@@ -315,7 +315,7 @@ class WeChatManager:
                 # 窗口失效，重新获取
                 logger.debug("窗口属性访问失败，重新获取")
                 self._gw_window = None
-                w = self.get_main_window(force_refresh=True, activate_first=True)
+                w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
                 if not w:
                     return None
                 left, top, right, bottom = w.left, w.top, w.right, w.bottom
@@ -399,13 +399,13 @@ class WeChatManager:
                 pass
     
     def get_status(self) -> Dict:
-        """获取微信状态（确保窗口激活）"""
-        if not self.check_process():
-            return {"status": "not_running", "message": "微信未运行"}
-        
-        # 确保窗口激活并置顶
-        w = self.get_main_window(activate_first=True)
+        """获取微信状态（确保窗口激活，支持自动启动）"""
+        # 直接调用 get_main_window，它会自动处理启动逻辑
+        w = self.get_main_window(activate_first=True, auto_start=True)
         if not w:
+            # 检查是否是微信未运行
+            if not self.check_process():
+                return {"status": "not_running", "message": "微信未运行且自动启动失败"}
             return {"status": "not_running", "message": "未找到微信窗口"}
         
         rect = self.get_window_rect()
@@ -418,10 +418,10 @@ class WeChatManager:
         }
     
     def click(self, x: int, y: int) -> bool:
-        """点击指定坐标（先激活窗口）"""
+        """点击指定坐标（先激活窗口，支持自动启动）"""
         try:
-            # 先激活窗口
-            w = self.get_main_window(activate_first=True)
+            # 先激活窗口（自动启动微信）
+            w = self.get_main_window(activate_first=True, auto_start=True)
             if not w:
                 return False
             time.sleep(0.1)
@@ -434,10 +434,10 @@ class WeChatManager:
     
     def input_text(self, content: str, x: int = None, y: int = None, 
                    send_enter: bool = False) -> bool:
-        """输入文本（先激活窗口）"""
+        """输入文本（先激活窗口，支持自动启动）"""
         try:
-            # 先激活窗口
-            w = self.get_main_window(activate_first=True)
+            # 先激活窗口（自动启动微信）
+            w = self.get_main_window(activate_first=True, auto_start=True)
             if not w:
                 return False
             time.sleep(0.1)
@@ -460,7 +460,7 @@ class WeChatManager:
     
     def scroll(self, direction: str = 'down', amount: int = 300, 
                x: int = None, y: int = None) -> bool:
-        """滚动页面（先激活窗口）
+        """滚动页面（先激活窗口，支持自动启动）
         
         Args:
             direction: 滚动方向，"up" 或 "down"
@@ -469,8 +469,8 @@ class WeChatManager:
             y: 滚动位置 Y 坐标，默认窗口中心
         """
         try:
-            # 先激活窗口
-            w = self.get_main_window(activate_first=True)
+            # 先激活窗口（自动启动微信）
+            w = self.get_main_window(activate_first=True, auto_start=True)
             if not w:
                 return False
             time.sleep(0.1)
@@ -496,11 +496,11 @@ class WeChatManager:
             return False
     
     def send_message(self, message: str) -> Tuple[bool, Optional[str]]:
-        """发送消息"""
+        """发送消息（支持自动启动微信）"""
         logger.info(f"发送消息: {message}")
         
-        # 1. 确保窗口可见
-        w = self.get_main_window(activate_first=True)
+        # 1. 确保窗口可见（自动启动微信）
+        w = self.get_main_window(activate_first=True, auto_start=True)
         if not w:
             return False, "未找到微信窗口"
         
@@ -541,8 +541,8 @@ class WeChatManager:
         try:
             from OCR import ocr_endpoint
             
-            # 获取 pygetwindow 窗口（强制刷新，不使用缓存）
-            w = self.get_main_window(force_refresh=True, activate_first=True)
+            # 获取 pygetwindow 窗口（强制刷新，自动启动微信）
+            w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
             if not w:
                 return {"status": "error", "message": "无法获取微信窗口"}
             
@@ -553,7 +553,7 @@ class WeChatManager:
                 # 窗口失效，重新获取
                 logger.debug("OCR: 窗口失效，重新获取")
                 self._gw_window = None
-                w = self.get_main_window(force_refresh=True, activate_first=True)
+                w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
                 if not w:
                     return {"status": "error", "message": "无法获取微信窗口"}
             
