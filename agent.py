@@ -42,7 +42,8 @@ logger = logging.getLogger("WeChat_Tool")
 class WeChatManager:
     """微信客户端管理器"""
     
-    WECHAT_EXE = "Weixin.exe"
+    # 支持多种进程名（不同版本微信进程名可能不同）
+    WECHAT_EXE_NAMES = ["WeChat.exe", "Weixin.exe"]
     WAKE_UP_HOTKEY = ('ctrl', 'alt', 'w')
     # 微信安装路径（常见路径，按优先级排序）
     WECHAT_PATHS = [
