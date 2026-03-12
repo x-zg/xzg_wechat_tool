@@ -1,5 +1,5 @@
-﻿---
-name: xzg_wechat-tool
+---
+name: xzg-wechat-tool
 version: 1.0.0
 description: 微信客户端自动化控制工具，支持截图、OCR、点击、输入、滚动和消息发送
 ---
@@ -11,7 +11,7 @@ Windows 微信客户端自动化控制工具。
 ## 功能
 
 - 📸 截图：截取微信窗口或屏幕
-- �� OCR：识别图片中的文字
+- 🔍 OCR：识别图片中的文字
 - 👆 点击：点击指定坐标
 - ⌨️ 输入：在指定位置输入文本
 - 📜 滚动：上下滚动页面
@@ -23,7 +23,7 @@ Windows 微信客户端自动化控制工具。
 需要先安装 Python 依赖：
 
 ```bash
-pip install pyautogui pygetwindow pillow pyperclip pytesseract opencv-python
+pip install -r requirements.txt
 ```
 
 ## 使用方法
@@ -40,10 +40,9 @@ print(status)
 ### 2. 截取微信窗口
 
 ```python
-from agent import capture_window
+from agent import screenshot
 
-img = capture_window()
-img.save("wechat_window.png")
+result = screenshot()
 ```
 
 ### 3. 发送消息到当前聊天窗口
@@ -51,7 +50,6 @@ img.save("wechat_window.png")
 ```python
 from agent import send_message_to_current
 
-# 给当前已打开的聊天窗口发送消息
 success, err = send_message_to_current("你好！")
 
 if success:
@@ -63,10 +61,9 @@ else:
 ### 4. 截图 + OCR
 
 ```python
-from agent import capture_window, get_ocr_result
+from agent import get_ocr_result
 
-img = capture_window()
-results = get_ocr_result(img)
+result = get_ocr_result()
 ```
 
 ### 5. 点击坐标
@@ -90,11 +87,22 @@ click_and_type("这是输入的文本", send_enter=True)
 ```python
 from agent import scroll
 
-# 向下滚动
 scroll(direction="down", amount=300)
+```
 
-# 向上滚动
-scroll(direction="up", amount=300)
+## 命令行使用
+
+也可以通过命令行使用：
+
+```bash
+# 获取微信状态
+python agent.py get_wechat_status
+
+# 截图
+python agent.py screenshot
+
+# 发送消息
+python agent.py send_message '{"message": "你好"}'
 ```
 
 ## 注意事项
@@ -107,12 +115,14 @@ scroll(direction="up", amount=300)
 ## 文件结构
 
 ```
-wechat-tool/
- agent.py           # 主程序
- app.py             # 微信自动化核心
- OCR.py             # OCR 帮助类
- ui_inspector.py    # UI 检查工具
- SKILL.md           # 技能描述
- _meta.json         # 元数据
- requirements.txt   # Python 依赖
+xzg_wechat_tool/
+├── agent.py           # 主程序
+├── OCR.py             # OCR 帮助类
+├── SKILL.md           # 技能描述
+├── _meta.json         # 元数据
+├── requirements.txt   # Python 依赖
+├── auto_reply.py      # 自动回复（可选）
+├── find_windows.py    # 窗口查找工具（可选）
+├── test_ocr.py        # OCR 测试（可选）
+└── test_wechat.py     # 微信测试（可选）
 ```
