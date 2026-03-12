@@ -224,11 +224,12 @@ class WeChatManager:
             return None
     
     def get_status(self) -> Dict:
-        """获取微信状态"""
+        """获取微信状态（确保窗口激活）"""
         if not self.check_process():
             return {"status": "not_running", "message": "微信未运行"}
         
-        w = self.get_main_window()
+        # 确保窗口激活并置顶
+        w = self.get_main_window(activate_first=True)
         if not w:
             return {"status": "not_running", "message": "未找到微信窗口"}
         
