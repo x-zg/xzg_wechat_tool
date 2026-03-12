@@ -1,5 +1,5 @@
 ﻿---
-name: wechat-tool
+name: xzg_wechat-tool
 version: 1.0.0
 description: 微信客户端自动化控制工具，支持截图、OCR、点击、输入、滚动和消息发送
 ---
