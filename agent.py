@@ -7,6 +7,7 @@
 
 import sys
 import io
+import os
 
 # 强制设置 stdout 编码为 UTF-8（解决 Windows 控制台编码问题）
 if sys.platform == 'win32':
@@ -43,11 +44,61 @@ class WeChatManager:
     
     WECHAT_EXE = "Weixin.exe"
     WAKE_UP_HOTKEY = ('ctrl', 'alt', 'w')
+    # 微信安装路径（常见路径，按优先级排序）
+    WECHAT_PATHS = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Tencent\WeChat\WeChat.exe"),
+        os.path.expandvars(r"%PROGRAMFILES%\Tencent\WeChat\WeChat.exe"),
+        os.path.expandvars(r"%PROGRAMFILES(X86)%\Tencent\WeChat\WeChat.exe"),
+        r"D:\Tencent\WeChat\WeChat.exe",
+        r"C:\Program Files\Tencent\WeChat\WeChat.exe",
+        r"C:\Program Files (x86)\Tencent\WeChat\WeChat.exe",
+    ]
 
     def __init__(self):
         self._app = None
         self._window = None
         self._gw_window = None  # pygetwindow 窗口
+    
+    def _find_wechat_path(self) -> Optional[str]:
+        """查找微信安装路径"""
+        for path in self.WECHAT_PATHS:
+            if os.path.exists(path):
+                return path
+        return None
+    
+    def start_wechat(self) -> Tuple[bool, str]:
+        """启动微信
+        
+        Returns:
+            Tuple[bool, str]: (是否成功, 消息)
+        """
+        # 先检查是否已运行
+        if self.check_process():
+            return True, "微信已在运行"
+        
+        # 查找微信路径
+        wechat_path = self._find_wechat_path()
+        if not wechat_path:
+            return False, "未找到微信安装路径"
+        
+        try:
+            # 启动微信
+            import subprocess
+            subprocess.Popen([wechat_path], shell=True)
+            logger.info(f"正在启动微信: {wechat_path}")
+            
+            # 等待微信启动（最多等待 10 秒）
+            for i in range(20):
+                time.sleep(0.5)
+                if self.check_process():
+                    # 再等待窗口出现
+                    time.sleep(1)
+                    return True, "微信启动成功"
+            
+            return False, "微信启动超时"
+        except Exception as e:
+            logger.error(f"启动微信失败: {e}")
+            return False, f"启动微信失败: {e}"
     
     def check_process(self) -> list:
         """检查微信进程，返回 PID 列表"""
@@ -154,13 +205,30 @@ class WeChatManager:
             except Exception:
                 return False
     
-    def get_main_window(self, force_refresh: bool = False, activate_first: bool = False) -> Optional[Any]:
-        """获取微信主窗口（返回 pygetwindow 窗口对象）"""
-        # 1. 检查微信是否运行
+    def get_main_window(self, force_refresh: bool = False, activate_first: bool = False, 
+                         auto_start: bool = True) -> Optional[Any]:
+        """获取微信主窗口（返回 pygetwindow 窗口对象）
+        
+        Args:
+            force_refresh: 是否强制刷新窗口
+            activate_first: 是否先激活窗口
+            auto_start: 微信未运行时是否自动启动
+        """
+        # 1. 检查微信是否运行，未运行时尝试启动
         pid_list = self.check_process()
         if not pid_list:
-            logger.debug("微信未运行")
-            return None
+            if auto_start:
+                logger.info("微信未运行，尝试自动启动...")
+                success, msg = self.start_wechat()
+                if not success:
+                    logger.warning(f"自动启动微信失败: {msg}")
+                    return None
+                pid_list = self.check_process()
+                if not pid_list:
+                    return None
+            else:
+                logger.debug("微信未运行")
+                return None
         
         # 2. 如果需要激活窗口，强制刷新
         if activate_first:
