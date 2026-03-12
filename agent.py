@@ -76,7 +76,7 @@ class WeChatManager:
             try:
                 w.activate()
                 time.sleep(0.3)
-            except:
+            except Exception:
                 pass
             
             # 方法2: 使用 win32gui 强制置顶
@@ -90,7 +90,7 @@ class WeChatManager:
                     # 确保窗口在最前
                     win32gui.BringWindowToTop(hwnd)
                     time.sleep(0.3)
-            except:
+            except Exception:
                 pass
             
             return True
@@ -110,9 +110,17 @@ class WeChatManager:
         if activate_first:
             force_refresh = True
         
-        # 3. 使用缓存的窗口
+        # 3. 验证缓存窗口是否仍然有效
         if self._gw_window and not force_refresh:
-            return self._gw_window
+            try:
+                # 验证窗口是否仍然存在且有效
+                _ = self._gw_window.left  # 尝试访问属性
+                if 500 < self._gw_window.width < 2000:
+                    return self._gw_window
+            except Exception:
+                # 窗口已失效，清除缓存
+                self._gw_window = None
+                logger.debug("缓存窗口已失效，重新查找")
         
         # 4. 查找窗口
         w = self._find_gw_window()
@@ -139,7 +147,7 @@ class WeChatManager:
                 self._app = Application(backend="uia").connect(process=pid, timeout=2)
                 self._window = self._app.window(title="微信")
                 break
-            except:
+            except Exception:
                 continue
         
         self._gw_window = w
@@ -166,16 +174,28 @@ class WeChatManager:
     
     def capture(self) -> Optional[Image.Image]:
         """截取微信窗口（先激活窗口，确保获取最新内容）"""
-        # 先激活窗口
-        w = self.get_main_window(activate_first=True)
+        # 先激活窗口（强制刷新，不使用缓存）
+        w = self.get_main_window(force_refresh=True, activate_first=True)
         if not w:
             return None
         
         try:
             time.sleep(0.3)  # 等待窗口激活完成
             
-            # 优先使用 ImageGrab 截取屏幕区域（保证最新）
-            bbox = (w.left, w.top, w.right, w.bottom)
+            # 再次验证窗口有效性
+            try:
+                left, top, right, bottom = w.left, w.top, w.right, w.bottom
+            except Exception:
+                # 窗口失效，重新获取
+                logger.debug("窗口属性访问失败，重新获取")
+                self._gw_window = None
+                w = self.get_main_window(force_refresh=True, activate_first=True)
+                if not w:
+                    return None
+                left, top, right, bottom = w.left, w.top, w.right, w.bottom
+            
+            # 使用 ImageGrab 截取屏幕区域
+            bbox = (left, top, right, bottom)
             return ImageGrab.grab(bbox=bbox)
             
         except Exception as e:
@@ -184,6 +204,11 @@ class WeChatManager:
     
     def _capture_window_hwnd(self, hwnd) -> Optional[Image.Image]:
         """使用 win32 API 截取窗口（即使被遮挡）"""
+        hwndDC = None
+        mfcDC = None
+        saveDC = None
+        saveBitMap = None
+        
         try:
             # 获取窗口尺寸
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
@@ -201,7 +226,7 @@ class WeChatManager:
             saveDC.SelectObject(saveBitMap)
             
             # 截取窗口内容
-            result = saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
+            saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
             
             # 转换为 PIL Image
             bmpinfo = saveBitMap.GetInfo()
@@ -212,16 +237,32 @@ class WeChatManager:
                 bmpstr, 'raw', 'BGRX', 0, 1
             )
             
-            # 清理资源
-            win32gui.DeleteObject(saveBitMap.GetHandle())
-            saveDC.DeleteDC()
-            mfcDC.DeleteDC()
-            win32gui.ReleaseDC(hwnd, hwndDC)
-            
             return img
         except Exception as e:
             logger.error(f"win32 截图失败: {e}")
             return None
+        finally:
+            # 确保清理资源（即使发生异常）
+            try:
+                if saveBitMap:
+                    win32gui.DeleteObject(saveBitMap.GetHandle())
+            except Exception:
+                pass
+            try:
+                if saveDC:
+                    saveDC.DeleteDC()
+            except Exception:
+                pass
+            try:
+                if mfcDC:
+                    mfcDC.DeleteDC()
+            except Exception:
+                pass
+            try:
+                if hwndDC:
+                    win32gui.ReleaseDC(hwnd, hwndDC)
+            except Exception:
+                pass
     
     def get_status(self) -> Dict:
         """获取微信状态（确保窗口激活）"""
@@ -366,10 +407,21 @@ class WeChatManager:
         try:
             from OCR import ocr_endpoint
             
-            # 获取 pygetwindow 窗口
-            w = self.get_main_window(activate_first=True)
+            # 获取 pygetwindow 窗口（强制刷新，不使用缓存）
+            w = self.get_main_window(force_refresh=True, activate_first=True)
             if not w:
                 return {"status": "error", "message": "无法获取微信窗口"}
+            
+            # 验证窗口有效性
+            try:
+                _ = w.left  # 测试窗口是否有效
+            except Exception:
+                # 窗口失效，重新获取
+                logger.debug("OCR: 窗口失效，重新获取")
+                self._gw_window = None
+                w = self.get_main_window(force_refresh=True, activate_first=True)
+                if not w:
+                    return {"status": "error", "message": "无法获取微信窗口"}
             
             # 调用 OCR（始终获取最新截图）
             results = ocr_endpoint(w, word=word)
@@ -378,6 +430,7 @@ class WeChatManager:
         except ImportError as e:
             return {"status": "error", "message": f"OCR 模块导入失败: {e}"}
         except Exception as e:
+            logger.error(f"OCR 识别失败: {e}")
             return {"status": "error", "message": f"OCR 识别失败: {str(e)}"}
     
     def get_page_context(self) -> Dict:

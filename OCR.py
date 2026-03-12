@@ -37,7 +37,7 @@ def _write_ocr_log(results, elapsed_time, keyword=None):
         return
     
     try:
-        log_file = Path(OCR_CONFIG.get('log_file', 'ocr_log.txt'))
+        log_file = Path(__file__).parent / OCR_CONFIG.get('log_file', 'ocr_log.txt')
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         
         # 构建日志内容
@@ -252,8 +252,12 @@ def _get_window_screenshot(win):
     """获取窗口截图"""
     try:
         if hasattr(win, 'left'):
-            left, top = win.left, win.top
-            right, bottom = win.right, win.bottom
+            try:
+                left, top = win.left, win.top
+                right, bottom = win.right, win.bottom
+            except Exception as e:
+                logger.error(f"窗口属性访问失败: {e}")
+                return (0, 0, 0, 0, None)
             
             bbox = (left, top, right, bottom)
             img = ImageGrab.grab(bbox=bbox)
@@ -324,8 +328,9 @@ def _preprocess_enhanced(img, scale_factor=2.0):
     ])
     sharpened = cv2.filter2D(enhanced, -1, kernel_sharpen)
     
-    # DEBUG: 保存预处理后的图片
-    cv2.imwrite("debug_preprocessed.png", cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR))
+    # DEBUG: 保存预处理后的图片（使用绝对路径）
+    debug_path = Path(__file__).parent / "debug_preprocessed.png"
+    cv2.imwrite(str(debug_path), cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR))
     
     # 7. 转回 RGB
     return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB), scale
