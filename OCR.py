@@ -50,7 +50,11 @@ def _write_ocr_log(results, elapsed_time, keyword=None):
                 {
                     'text': item['text'],
                     'score': round(item['scores'], 2),
-                    'center': item['center']
+                    'center': item['center'],
+                    'x_min': item['x_min'],
+                    'x_max': item['x_max'],
+                    'y_min': item['y_min'],
+                    'y_max': item['y_max']
                 }
                 for item in results
             ]
