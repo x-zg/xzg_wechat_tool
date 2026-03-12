@@ -173,7 +173,7 @@ class WeChatManager:
             return None
     
     def capture(self) -> Optional[Image.Image]:
-        """截取微信窗口（先激活窗口，确保获取最新内容）"""
+        """截取微信窗口（使用 win32 API，即使被遮挡也能正确截图）"""
         # 先激活窗口（强制刷新，不使用缓存）
         w = self.get_main_window(force_refresh=True, activate_first=True)
         if not w:
@@ -185,6 +185,7 @@ class WeChatManager:
             # 再次验证窗口有效性
             try:
                 left, top, right, bottom = w.left, w.top, w.right, w.bottom
+                hwnd = win32gui.FindWindow(None, w.title)
             except Exception:
                 # 窗口失效，重新获取
                 logger.debug("窗口属性访问失败，重新获取")
@@ -193,8 +194,16 @@ class WeChatManager:
                 if not w:
                     return None
                 left, top, right, bottom = w.left, w.top, w.right, w.bottom
+                hwnd = win32gui.FindWindow(None, w.title)
             
-            # 使用 ImageGrab 截取屏幕区域
+            # 优先使用 win32 API 截图（即使窗口被遮挡也能正确截图）
+            if hwnd:
+                img = self._capture_window_hwnd(hwnd)
+                if img:
+                    return img
+                logger.debug("win32 截图失败，回退到 ImageGrab")
+            
+            # 回退方案：使用 ImageGrab 截取屏幕区域
             bbox = (left, top, right, bottom)
             return ImageGrab.grab(bbox=bbox)
             
