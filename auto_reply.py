@@ -14,7 +14,7 @@ import pygetwindow as gw
 from PIL import Image, ImageGrab
 import pyperclip
 
-from server import get_wechat_main_window, get_current_contact_from_window, send_message_to_current
+from agent import get_wechat_main_window, get_current_contact_from_window, send_message_to_current
 
 
 def capture_chat_area():
@@ -79,7 +79,7 @@ def test_auto_reply():
     
     # Step 1: 获取当前状态
     print("Step 1: 检查微信状态...")
-    from server import get_wechat_status
+    from agent import get_wechat_status
     status = get_wechat_status()
     print(f"状态: {json.dumps(status, ensure_ascii=False, indent=2)}\n")
     
