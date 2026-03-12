@@ -5,11 +5,13 @@
 - 多尺度检测减少文字遗漏
 - 增强图像预处理
 - 结果去重合并
+- OCR结果日志记录
 """
 import cv2
 import numpy as np
 import logging
 import time
+import json
 from pathlib import Path
 from PIL import ImageGrab
 from rapidocr import RapidOCR
@@ -23,9 +25,44 @@ OCR_CONFIG = {
     'scales': [2.0, 3.0],           # 多尺度检测
     'use_multi_scale': True,        # 是否启用多尺度
     'iou_threshold': 0.3,           # 去重IOU阈值
+    'log_enabled': True,            # 是否启用OCR日志
+    'log_file': 'ocr_log.txt',      # 日志文件路径
 }
 
 _engine = None
+
+def _write_ocr_log(results, elapsed_time, keyword=None):
+    """将OCR结果写入日志文件"""
+    if not OCR_CONFIG.get('log_enabled', False):
+        return
+    
+    try:
+        log_file = Path(OCR_CONFIG.get('log_file', 'ocr_log.txt'))
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 构建日志内容
+        log_entry = {
+            'timestamp': timestamp,
+            'elapsed_seconds': round(elapsed_time, 2),
+            'total_items': len(results),
+            'keyword': keyword,
+            'results': [
+                {
+                    'text': item['text'],
+                    'score': round(item['scores'], 2),
+                    'center': item['center']
+                }
+                for item in results
+            ]
+        }
+        
+        # 追加写入日志
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+            
+    except Exception as e:
+        logger.warning(f"写入OCR日志失败: {e}")
+
 
 def get_engine():
     """获取 OCR 引擎（单例）"""
@@ -79,6 +116,9 @@ def ocr_endpoint(win, word=None, fast_mode=False):
         
         elapsed = time.time() - start_time
         logger.info(f"OCR 完成: {elapsed:.2f}s, 识别到 {len(all_results)} 个文本")
+        
+        # 写入OCR日志
+        _write_ocr_log(all_results, elapsed, keyword=word)
         
         # 关键词匹配
         if word is None:
