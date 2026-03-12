@@ -143,62 +143,112 @@ class WeChatManager:
             return False
     
     def _wake_up_wechat(self) -> bool:
-        """唤醒微信窗口（尝试多种方法）"""
-        w = self._find_gw_window()
-        if not w:
-            logger.debug("未找到微信窗口")
-            return False
+        """唤醒微信窗口
         
-        # 如果窗口已可见，直接返回成功
-        if self._is_window_visible(w):
-            logger.debug("窗口已可见，跳过唤醒")
-            return True
+        逻辑：
+        1. 如果窗口不存在（微信在托盘区）→ 用快捷键唤醒
+        2. 如果窗口存在但最小化 → 用 Win32 API 恢复
+        3. 如果窗口存在且已显示 → 直接激活到前台（不用快捷键，避免关闭）
+        """
+        w = self._find_gw_window()
+        
+        # 情况1：找不到窗口，微信可能在托盘区，用快捷键唤醒
+        if not w:
+            logger.debug("未找到微信窗口，尝试快捷键唤醒...")
+            pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
+            time.sleep(0.5)
+            w = self._find_gw_window()
+            return w is not None and self._is_window_visible(w)
         
         # 获取窗口句柄
         hwnd = w._hWnd if hasattr(w, '_hWnd') else None
-        if hwnd:
-            logger.debug(f"尝试通过 Win32 API 激活窗口: hwnd={hwnd}")
-            # 如果窗口最小化，先恢复
-            if win32gui.IsIconic(hwnd):
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                time.sleep(0.3)
-            
-            # 尝试置顶
-            try:
-                # 使用 AttachThreadInput 绕过限制
-                foreground_hwnd = win32gui.GetForegroundWindow()
-                foreground_thread = win32process.GetWindowThreadProcessId(foreground_hwnd)[0]
-                current_thread = win32api.GetCurrentThreadId()
-                target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
-                
-                if current_thread != target_thread:
-                    win32gui.AttachThreadInput(current_thread, target_thread, True)
-                    if foreground_thread != target_thread:
-                        win32gui.AttachThreadInput(foreground_thread, target_thread, True)
-                
-                win32gui.SetForegroundWindow(hwnd)
-                win32gui.BringWindowToTop(hwnd)
-                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
-                
-                if current_thread != target_thread:
-                    win32gui.AttachThreadInput(current_thread, target_thread, False)
-                    if foreground_thread != target_thread:
-                        win32gui.AttachThreadInput(foreground_thread, target_thread, False)
-                
-                time.sleep(0.2)
-                
-                if self._is_window_visible(w):
-                    logger.debug("Win32 API 激活窗口成功")
-                    return True
-            except Exception as e:
-                logger.debug(f"Win32 API 激活失败: {e}")
+        if not hwnd:
+            logger.warning("无法获取窗口句柄")
+            return False
         
-        # 回退：使用快捷键
-        logger.debug("尝试使用快捷键唤醒...")
-        pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
-        time.sleep(0.5)
+        # 情况2：窗口最小化，需要恢复
+        if win32gui.IsIconic(hwnd):
+            logger.debug("窗口已最小化，恢复窗口...")
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.3)
+        
+        # 情况3：窗口已显示，激活到前台（不用快捷键）
+        logger.debug("激活窗口到前台...")
+        self._bring_window_to_front(w)
+        time.sleep(0.2)
         
         return self._is_window_visible(w)
+    
+    def _ensure_window_ready(self, auto_start: bool = True) -> Tuple[Optional[Any], Optional[str]]:
+        """确保微信窗口就绪（统一的状态检查方法）
+        
+        所有操作方法应调用此方法来确保窗口状态正确。
+        
+        Args:
+            auto_start: 是否自动启动微信（如果未运行）
+        
+        Returns:
+            Tuple[Optional[window], Optional[error_msg]]:
+                - 成功: (window_object, None)
+                - 失败: (None, error_message)
+        """
+        # 步骤1: 检查微信进程是否存在
+        pid_list = self.check_process()
+        
+        if not pid_list:
+            # 进程不存在
+            if auto_start:
+                logger.info("微信未运行，尝试自动启动...")
+                success, msg = self.start_wechat()
+                if not success:
+                    return None, f"微信未运行且自动启动失败: {msg}"
+                pid_list = self.check_process()
+                if not pid_list:
+                    return None, "微信启动超时"
+            else:
+                return None, "微信未运行"
+        
+        # 步骤2: 查找微信窗口
+        w = self._find_gw_window()
+        
+        # 步骤3: 判断窗口状态并处理
+        if not w:
+            # 窗口不存在（微信在托盘区），用快捷键唤醒
+            logger.debug("窗口不存在，尝试快捷键唤醒...")
+            pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
+            time.sleep(0.5)
+            w = self._find_gw_window()
+            if not w:
+                return None, "无法唤醒微信窗口（可能在托盘区）"
+        
+        # 步骤4: 获取窗口句柄
+        hwnd = w._hWnd if hasattr(w, '_hWnd') else None
+        if not hwnd:
+            return None, "无法获取微信窗口句柄"
+        
+        # 步骤5: 检查窗口是否最小化
+        if win32gui.IsIconic(hwnd):
+            logger.debug("窗口已最小化，恢复窗口...")
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.3)
+        
+        # 步骤6: 激活窗口到前台
+        self._bring_window_to_front(w)
+        time.sleep(0.2)
+        
+        # 步骤7: 验证窗口是否真的在前台
+        foreground_hwnd = win32gui.GetForegroundWindow()
+        if foreground_hwnd != hwnd:
+            # 再次尝试激活
+            logger.debug("窗口未在前台，再次激活...")
+            self._bring_window_to_front(w)
+            time.sleep(0.2)
+            foreground_hwnd = win32gui.GetForegroundWindow()
+            if foreground_hwnd != hwnd:
+                logger.warning("窗口激活可能失败，但继续操作")
+        
+        self._gw_window = w
+        return w, None
     
     def _bring_window_to_front(self, w) -> bool:
         """将窗口置顶并激活"""
@@ -265,68 +315,8 @@ class WeChatManager:
             activate_first: 是否先激活窗口
             auto_start: 微信未运行时是否自动启动
         """
-        # 1. 检查微信是否运行，未运行时尝试启动
-        pid_list = self.check_process()
-        if not pid_list:
-            if auto_start:
-                logger.info("微信未运行，尝试自动启动...")
-                success, msg = self.start_wechat()
-                if not success:
-                    logger.warning(f"自动启动微信失败: {msg}")
-                    return None
-                pid_list = self.check_process()
-                if not pid_list:
-                    return None
-            else:
-                logger.debug("微信未运行")
-                return None
-        
-        # 2. 如果需要激活窗口，强制刷新
-        if activate_first:
-            force_refresh = True
-        
-        # 3. 验证缓存窗口是否仍然有效
-        if self._gw_window and not force_refresh:
-            try:
-                # 验证窗口是否仍然存在且有效
-                _ = self._gw_window.left  # 尝试访问属性
-                if 500 < self._gw_window.width < 2000:
-                    return self._gw_window
-            except Exception:
-                # 窗口已失效，清除缓存
-                self._gw_window = None
-                logger.debug("缓存窗口已失效，重新查找")
-        
-        # 4. 查找窗口
-        w = self._find_gw_window()
-        
-        # 5. 如果窗口不可见或未找到，尝试唤醒
-        if not w or not self._is_window_visible(w):
-            if not self._wake_up_wechat():
-                logger.warning("唤醒微信失败")
-                return None
-            w = self._find_gw_window()
-        
-        if not w:
-            logger.warning("未找到微信窗口")
-            return None
-        
-        # 6. 激活窗口（确保在前台）
-        if activate_first:
-            self._bring_window_to_front(w)
-        
-        logger.debug(f"找到窗口: {w.title}, 大小: {w.width}x{w.height}")
-        
-        # 7. 尝试连接 pywinauto（用于 OCR）
-        for pid in pid_list:
-            try:
-                self._app = Application(backend="uia").connect(process=pid, timeout=2)
-                self._window = self._app.window(title="微信")
-                break
-            except Exception:
-                continue
-        
-        self._gw_window = w
+        # 使用统一的窗口状态检查方法
+        w, error = self._ensure_window_ready(auto_start=auto_start)
         return w
     
     def get_window_rect(self) -> Optional[Dict]:
