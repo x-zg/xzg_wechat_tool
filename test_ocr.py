@@ -1,17 +1,16 @@
 #! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 import time
-import json
 
 print("=" * 60)
-print("测试优化后的 OCR")
+print("测试 OCR 识别效果")
 print("=" * 60)
 
 from agent import WeChatManager
 
 manager = WeChatManager()
 
-print("\n[测试 1] OCR 识别（增强模式）...")
+print("\n[测试] OCR 识别...")
 start = time.time()
 result = manager.get_ocr_result()
 elapsed = time.time() - start
@@ -26,10 +25,14 @@ if result.get("status") == "success":
     print(f"  识别到: {count} 个文本区域")
     
     print("\n  所有识别结果:")
-    for i, item in enumerate(results):
+    for i, item in enumerate(results[:20]):  # 只显示前20个
         text = item.get('text', '')
         score = item.get('scores', 0)
-        print(f"    [{i+1}] {text} (置信度: {score:.2f})")
+        center = item.get('center', [])
+        print(f"    [{i+1}] {text} (置信度: {score:.2f}, 中心: {center})")
+    
+    if count > 20:
+        print(f"    ... 还有 {count - 20} 个结果")
 else:
     print(f"[ERROR] {result.get('message')}")
 

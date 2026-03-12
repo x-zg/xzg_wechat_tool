@@ -53,11 +53,15 @@ def ocr_endpoint(win, word=None, fast_mode=False):
             logger.warning("截图失败")
             return []
         
+        # 记录原始尺寸用于坐标还原
+        original_h, original_w = screenshot.shape[:2]
+        
         # 2. 图像预处理
         if fast_mode:
             img = _preprocess_fast(screenshot)
+            scale = 1.0
         else:
-            img = _preprocess_enhanced(screenshot)
+            img, scale = _preprocess_enhanced(screenshot)
         
         # 3. OCR 识别
         engine = get_engine()
@@ -84,7 +88,7 @@ def ocr_endpoint(win, word=None, fast_mode=False):
         if len(boxes) == 0:
             return []
         
-        # 5. 处理结果
+        # 5. 处理结果（坐标还原到原始尺寸）
         processed_items = []
         for i in range(len(boxes)):
             try:
@@ -96,6 +100,8 @@ def ocr_endpoint(win, word=None, fast_mode=False):
                     continue
                 
                 box_np = np.array(box, dtype=np.float32).reshape(-1, 2)
+                # 坐标还原（除以缩放比例）
+                box_np = box_np / scale
                 box_np[:, 0] += win_left
                 box_np[:, 1] += win_top
                 screen_box = box_np.astype(np.int32).tolist()
@@ -167,7 +173,11 @@ def _preprocess_fast(img):
 
 
 def _preprocess_enhanced(img):
-    """增强预处理（提高识别率）"""
+    """增强预处理（提高识别率）
+    
+    Returns:
+        tuple: (处理后的图像, 缩放比例)
+    """
     # 1. 转换格式
     if img.ndim == 2:
         img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
@@ -178,26 +188,33 @@ def _preprocess_enhanced(img):
     else:
         img_rgb = img
     
-    # 2. 转灰度
+    # 2. 放大图像（针对小字，提高识别率）
+    h, w = img_rgb.shape[:2]
+    scale = 2.0 if min(h, w) < 1000 else 1.5
+    if scale > 1:
+        img_rgb = cv2.resize(img_rgb, None, fx=scale, fy=scale, 
+                            interpolation=cv2.INTER_CUBIC)
+    
+    # 3. 转灰度
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     
-    # 3. 去噪（双边滤波保留边缘）
+    # 4. 去噪（双边滤波保留边缘）
     denoised = cv2.bilateralFilter(gray, 9, 75, 75)
     
-    # 4. 对比度增强（CLAHE）
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # 5. 对比度增强（CLAHE）- 调整参数提高效果
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
     enhanced = clahe.apply(denoised)
     
-    # 5. 锐化
+    # 6. 锐化 - 使用更温和的核
     kernel_sharpen = np.array([
-        [-1, -1, -1],
-        [-1,  9, -1],
-        [-1, -1, -1]
+        [0, -1, 0],
+        [-1, 5, -1],
+        [0, -1, 0]
     ])
     sharpened = cv2.filter2D(enhanced, -1, kernel_sharpen)
     
-    # 6. 转回 RGB
-    return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB)
+    # 7. 转回 RGB
+    return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB), scale
 
 
 def _match_keyword(items, word):
