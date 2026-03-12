@@ -120,13 +120,22 @@ class WeChatManager:
         return None
     
     def _is_window_visible(self, w) -> bool:
-        """检查窗口是否可见（不在最小化状态）"""
+        """检查窗口是否可见且不在最小化状态"""
         try:
-            # 检查窗口是否可见且不在最小化状态
-            # 最小化的窗口宽度或高度通常为 0 或很小
+            # 获取窗口句柄
+            hwnd = w._hWnd if hasattr(w, '_hWnd') else None
+            if hwnd:
+                # 使用 Win32 API 检查窗口状态
+                if not win32gui.IsWindowVisible(hwnd):
+                    return False
+                # 检查是否最小化
+                if win32gui.IsIconic(hwnd):
+                    return False
+                return True
+            
+            # 回退到属性检查
             if w.width < 100 or w.height < 100:
                 return False
-            # 检查窗口是否在屏幕范围内
             if w.left < -w.width or w.top < -w.height:
                 return False
             return True
@@ -134,20 +143,62 @@ class WeChatManager:
             return False
     
     def _wake_up_wechat(self) -> bool:
-        """唤醒微信窗口（Ctrl+Alt+W），仅在窗口不可见时执行"""
-        # 先检查窗口是否已经可见
+        """唤醒微信窗口（尝试多种方法）"""
         w = self._find_gw_window()
-        if w and self._is_window_visible(w):
+        if not w:
+            logger.debug("未找到微信窗口")
+            return False
+        
+        # 如果窗口已可见，直接返回成功
+        if self._is_window_visible(w):
             logger.debug("窗口已可见，跳过唤醒")
             return True
         
-        logger.debug("执行唤醒快捷键...")
+        # 获取窗口句柄
+        hwnd = w._hWnd if hasattr(w, '_hWnd') else None
+        if hwnd:
+            logger.debug(f"尝试通过 Win32 API 激活窗口: hwnd={hwnd}")
+            # 如果窗口最小化，先恢复
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                time.sleep(0.3)
+            
+            # 尝试置顶
+            try:
+                # 使用 AttachThreadInput 绕过限制
+                foreground_hwnd = win32gui.GetForegroundWindow()
+                foreground_thread = win32process.GetWindowThreadProcessId(foreground_hwnd)[0]
+                current_thread = win32api.GetCurrentThreadId()
+                target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
+                
+                if current_thread != target_thread:
+                    win32gui.AttachThreadInput(current_thread, target_thread, True)
+                    if foreground_thread != target_thread:
+                        win32gui.AttachThreadInput(foreground_thread, target_thread, True)
+                
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.BringWindowToTop(hwnd)
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                
+                if current_thread != target_thread:
+                    win32gui.AttachThreadInput(current_thread, target_thread, False)
+                    if foreground_thread != target_thread:
+                        win32gui.AttachThreadInput(foreground_thread, target_thread, False)
+                
+                time.sleep(0.2)
+                
+                if self._is_window_visible(w):
+                    logger.debug("Win32 API 激活窗口成功")
+                    return True
+            except Exception as e:
+                logger.debug(f"Win32 API 激活失败: {e}")
+        
+        # 回退：使用快捷键
+        logger.debug("尝试使用快捷键唤醒...")
         pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
         time.sleep(0.5)
         
-        # 检查窗口是否出现
-        w = self._find_gw_window()
-        return w is not None and self._is_window_visible(w)
+        return self._is_window_visible(w)
     
     def _bring_window_to_front(self, w) -> bool:
         """将窗口置顶并激活"""
@@ -302,33 +353,53 @@ class WeChatManager:
         # 先激活窗口（强制刷新，自动启动微信）
         w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
         if not w:
+            logger.error("无法获取微信窗口")
             return None
         
-        try:
-            time.sleep(0.3)  # 等待窗口激活完成
-            
-            # 再次验证窗口有效性
+        # 获取窗口句柄
+        hwnd = w._hWnd if hasattr(w, '_hWnd') else None
+        if not hwnd:
+            # 回退：通过标题查找
             try:
-                left, top, right, bottom = w.left, w.top, w.right, w.bottom
                 hwnd = win32gui.FindWindow(None, w.title)
             except Exception:
-                # 窗口失效，重新获取
-                logger.debug("窗口属性访问失败，重新获取")
-                self._gw_window = None
-                w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
-                if not w:
-                    return None
-                left, top, right, bottom = w.left, w.top, w.right, w.bottom
-                hwnd = win32gui.FindWindow(None, w.title)
+                pass
+        
+        if not hwnd:
+            logger.error("无法获取微信窗口句柄")
+            return None
+        
+        # 验证窗口是否已激活到前台，最多尝试 3 次
+        for attempt in range(3):
+            foreground_hwnd = win32gui.GetForegroundWindow()
+            if foreground_hwnd == hwnd:
+                break  # 微信已在前台
+            
+            logger.debug(f"微信窗口未在前台 (尝试 {attempt + 1}/3)，重新激活...")
+            self._bring_window_to_front(w)
+            time.sleep(0.3)
+        else:
+            # 3 次尝试后仍未激活，但窗口句柄有效，仍可尝试用 Win32 API 截图
+            logger.warning("微信窗口未能激活到前台，尝试直接截图")
+        
+        try:
+            # 获取窗口位置
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            
+            # 验证窗口尺寸有效
+            width = right - left
+            height = bottom - top
+            if width < 100 or height < 100:
+                logger.error(f"微信窗口尺寸异常: {width}x{height}")
+                return None
             
             # 优先使用 win32 API 截图（即使窗口被遮挡也能正确截图）
-            if hwnd:
-                img = self._capture_window_hwnd(hwnd)
-                if img:
-                    return img
-                logger.debug("win32 截图失败，回退到 ImageGrab")
+            img = self._capture_window_hwnd(hwnd)
+            if img:
+                return img
             
             # 回退方案：使用 ImageGrab 截取屏幕区域
+            logger.debug("win32 截图失败，回退到 ImageGrab")
             bbox = (left, top, right, bottom)
             return ImageGrab.grab(bbox=bbox)
             
