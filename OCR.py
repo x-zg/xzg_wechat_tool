@@ -53,9 +53,6 @@ def ocr_endpoint(win, word=None, fast_mode=False):
             logger.warning("截图失败")
             return []
         
-        # 记录原始尺寸用于坐标还原
-        original_h, original_w = screenshot.shape[:2]
-        
         # 2. 图像预处理
         if fast_mode:
             img = _preprocess_fast(screenshot)

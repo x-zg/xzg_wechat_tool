@@ -1,7 +1,7 @@
 ---
 name: wechat_tool
 description: 微信客户端自动化控制工具，支持打开微信、截图、OCR识别、点击、输入、滚动、发送消息等操作
-version: 1.1.0
+version: 1.2.0
 author: xzg
 permissions: 系统操作权限（控制微信窗口、鼠标键盘操作）
 ---
@@ -35,13 +35,13 @@ permissions: 系统操作权限（控制微信窗口、鼠标键盘操作）
 
 **调用格式：**
 ```bash
-python {baseDir}/agent.py <action> '<json_params>'
+python {baseDir}/agent.py <action> [--参数名 参数值]...
 ```
 
 **重要说明：**
 - `<action>` 是动作名称，必须是以下支持的动作之一
-- `<json_params>` 是 JSON 格式的参数，必须用单引号包裹
-- 如果参数为空，使用 `'{}'`
+- 参数使用 `--参数名 参数值` 格式传递，无需 JSON
+- 必需参数必须提供，可选参数可不传
 - 所有命令返回 JSON 格式结果
 
 ---
@@ -52,25 +52,25 @@ python {baseDir}/agent.py <action> '<json_params>'
 
 **调用：**
 ```bash
-python {baseDir}/agent.py screenshot '{}'
+python {baseDir}/agent.py screenshot
 ```
 
 **参数说明：**
 
 | 参数名 | 类型 | 必需 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| save_path | string | 否 | 无 | 保存路径（绝对路径或相对路径）。不传则返回 base64 编码 |
+| --save_path | string | 否 | 无 | 保存路径。不传则返回 base64 编码 |
 
 **示例：**
 
 保存到文件：
 ```bash
-python {baseDir}/agent.py screenshot '{"save_path": "D:/screenshots/wechat.png"}'
+python {baseDir}/agent.py screenshot --save_path D:/screenshots/wechat.png
 ```
 
 返回 base64：
 ```bash
-python {baseDir}/agent.py screenshot '{}'
+python {baseDir}/agent.py screenshot
 ```
 
 **返回值：**
@@ -109,7 +109,7 @@ python {baseDir}/agent.py screenshot '{}'
 
 **调用：**
 ```bash
-python {baseDir}/agent.py get_wechat_status '{}'
+python {baseDir}/agent.py get_wechat_status
 ```
 
 **参数说明：** 无参数
@@ -150,10 +150,10 @@ python {baseDir}/agent.py get_wechat_status '{}'
 
 **调用：**
 ```bash
-python {baseDir}/agent.py get_ocr_result '{}'
+python {baseDir}/agent.py get_ocr_result
 ```
 
-**参数说明：** 无参数（已移除 word、image、use_cache 参数）
+**参数说明：** 无参数
 
 **返回值：**
 
@@ -209,15 +209,15 @@ python {baseDir}/agent.py get_ocr_result '{}'
 
 **调用：**
 ```bash
-python {baseDir}/agent.py click_coordinate '{"x": 200, "y": 150}'
+python {baseDir}/agent.py click_coordinate --x 200 --y 150
 ```
 
 **参数说明：**
 
 | 参数名 | 类型 | 必需 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| x | int | **是** | - | 屏幕 X 坐标（绝对坐标） |
-| y | int | **是** | - | 屏幕 Y 坐标（绝对坐标） |
+| --x | int | **是** | - | 屏幕 X 坐标（绝对坐标） |
+| --y | int | **是** | - | 屏幕 Y 坐标（绝对坐标） |
 
 **返回值：**
 
@@ -229,15 +229,7 @@ python {baseDir}/agent.py click_coordinate '{"x": 200, "y": 150}'
 }
 ```
 
-失败（缺少参数）：
-```json
-{
-  "status": "error",
-  "message": "缺少 x 或 y 参数"
-}
-```
-
-失败（窗口问题）：
+失败：
 ```json
 {
   "status": "error",
@@ -253,28 +245,33 @@ python {baseDir}/agent.py click_coordinate '{"x": 200, "y": 150}'
 
 **调用：**
 ```bash
-python {baseDir}/agent.py click_and_type '{"content": "你好世界"}'
+python {baseDir}/agent.py click_and_type --content "你好世界"
 ```
 
 **参数说明：**
 
 | 参数名 | 类型 | 必需 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| content | string | **是** | - | 要输入的文字内容 |
-| x | int | 否 | null | 点击位置 X 坐标，不传则不点击 |
-| y | int | 否 | null | 点击位置 Y 坐标，不传则不点击 |
-| send_enter | bool | 否 | false | 输入后是否按回车键 |
+| --content | string | **是** | - | 要输入的文字内容 |
+| --x | int | 否 | null | 点击位置 X 坐标，不传则不点击 |
+| --y | int | 否 | null | 点击位置 Y 坐标，不传则不点击 |
+| --send_enter | flag | 否 | false | 输入后是否按回车键（无需值，有则生效） |
 
 **示例：**
 
 只输入文字：
 ```bash
-python {baseDir}/agent.py click_and_type '{"content": "你好"}'
+python {baseDir}/agent.py click_and_type --content "你好"
 ```
 
-点击后输入并回车：
+点击后输入：
 ```bash
-python {baseDir}/agent.py click_and_type '{"content": "消息内容", "x": 500, "y": 600, "send_enter": true}'
+python {baseDir}/agent.py click_and_type --content "消息内容" --x 500 --y 600
+```
+
+输入后按回车：
+```bash
+python {baseDir}/agent.py click_and_type --content "消息内容" --x 500 --y 600 --send_enter
 ```
 
 **返回值：**
@@ -287,15 +284,7 @@ python {baseDir}/agent.py click_and_type '{"content": "消息内容", "x": 500, 
 }
 ```
 
-失败（缺少 content）：
-```json
-{
-  "status": "error",
-  "message": "缺少 content 参数"
-}
-```
-
-失败（窗口问题）：
+失败：
 ```json
 {
   "status": "error",
@@ -311,19 +300,19 @@ python {baseDir}/agent.py click_and_type '{"content": "消息内容", "x": 500, 
 
 **调用：**
 ```bash
-python {baseDir}/agent.py send_message '{"message": "你好"}'
+python {baseDir}/agent.py send_message --message "你好"
 ```
 
 **参数说明：**
 
 | 参数名 | 类型 | 必需 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| message | string | **是** | - | 要发送的消息内容 |
+| --message | string | **是** | - | 要发送的消息内容 |
 
 **注意：** 
 - 此命令会自动点击输入框（窗口底部中央位置）
 - 使用剪贴板粘贴方式输入，然后按回车发送
-- **已移除 contact 参数**，需先手动打开目标聊天窗口
+- 需先打开目标聊天窗口
 
 **返回值：**
 
@@ -351,33 +340,33 @@ python {baseDir}/agent.py send_message '{"message": "你好"}'
 
 **调用：**
 ```bash
-python {baseDir}/agent.py scroll '{"direction": "down", "amount": 300}'
+python {baseDir}/agent.py scroll --direction down --amount 300
 ```
 
 **参数说明：**
 
 | 参数名 | 类型 | 必需 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| direction | string | 否 | "down" | 滚动方向："up" 向上滚动，"down" 向下滚动 |
-| amount | int | 否 | 300 | 滚动量（像素） |
-| x | int | 否 | 窗口中心 X | 滚动位置 X 坐标（屏幕绝对坐标） |
-| y | int | 否 | 窗口中心 Y | 滚动位置 Y 坐标（屏幕绝对坐标） |
+| --direction | string | 否 | "down" | 滚动方向："up" 或 "down" |
+| --amount | int | 否 | 300 | 滚动量（像素） |
+| --x | int | 否 | 窗口中心 X | 滚动位置 X 坐标 |
+| --y | int | 否 | 窗口中心 Y | 滚动位置 Y 坐标 |
 
 **示例：**
 
 默认滚动（窗口中心，向下）：
 ```bash
-python {baseDir}/agent.py scroll '{}'
+python {baseDir}/agent.py scroll
 ```
 
 向上滚动 500 像素：
 ```bash
-python {baseDir}/agent.py scroll '{"direction": "up", "amount": 500}'
+python {baseDir}/agent.py scroll --direction up --amount 500
 ```
 
-指定位置滚动（聊天列表区域）：
+指定位置滚动：
 ```bash
-python {baseDir}/agent.py scroll '{"x": 200, "y": 400, "amount": 300}'
+python {baseDir}/agent.py scroll --x 200 --y 400 --amount 300
 ```
 
 **返回值：**
@@ -406,10 +395,10 @@ python {baseDir}/agent.py scroll '{"x": 200, "y": 400, "amount": 300}'
 
 **调用：**
 ```bash
-python {baseDir}/agent.py get_page_context '{}'
+python {baseDir}/agent.py get_page_context
 ```
 
-**参数说明：** 无参数（已移除 use_cache 参数）
+**参数说明：** 无参数
 
 **返回值：** 同 `get_ocr_result`
 
@@ -423,8 +412,7 @@ python {baseDir}/agent.py get_page_context '{}'
 
 **执行步骤：**
 ```bash
-# 截图命令会自动唤醒并激活微信窗口
-python {baseDir}/agent.py screenshot '{"save_path": "wechat.png"}'
+python {baseDir}/agent.py screenshot --save_path wechat.png
 ```
 
 ### 示例2：发送消息到当前聊天
@@ -433,16 +421,16 @@ python {baseDir}/agent.py screenshot '{"save_path": "wechat.png"}'
 
 **执行步骤：**
 
-1. 先确认微信状态
+1. 确认微信状态
 ```bash
-python {baseDir}/agent.py get_wechat_status '{}'
+python {baseDir}/agent.py get_wechat_status
 ```
 
 2. 如果返回 `"status": "not_running"`，提示用户启动微信
 
 3. 发送消息
 ```bash
-python {baseDir}/agent.py send_message '{"message": "你好，我是机器人"}'
+python {baseDir}/agent.py send_message --message "你好，我是机器人"
 ```
 
 ### 示例3：点击指定文字
@@ -453,38 +441,17 @@ python {baseDir}/agent.py send_message '{"message": "你好，我是机器人"}'
 
 1. 获取 OCR 结果
 ```bash
-python {baseDir}/agent.py get_ocr_result '{}'
+python {baseDir}/agent.py get_ocr_result
 ```
 
 2. 从返回结果中找到 "文件传输助手" 的 center 坐标
 
 3. 点击该位置
 ```bash
-python {baseDir}/agent.py click_coordinate '{"x": 215, "y": 215}'
+python {baseDir}/agent.py click_coordinate --x 215 --y 215
 ```
 
-### 示例4：复杂操作流程
-
-**用户说**："打开微信，点击文件传输助手，发送消息：测试完成"
-
-**执行步骤：**
-
-1. 唤醒微信并获取界面信息
-```bash
-python {baseDir}/agent.py get_ocr_result '{}'
-```
-
-2. 从结果中找到 "文件传输助手" 的 center 坐标，点击
-```bash
-python {baseDir}/agent.py click_coordinate '{"x": 215, "y": 215}'
-```
-
-3. 等待界面切换后，发送消息
-```bash
-python {baseDir}/agent.py send_message '{"message": "测试完成"}'
-```
-
-### 示例5：搜索联系人并发送消息
+### 示例4：搜索联系人并发送消息
 
 **用户说**："给张三发消息：你好，明天开会"
 
@@ -492,105 +459,79 @@ python {baseDir}/agent.py send_message '{"message": "测试完成"}'
 
 1. 获取当前界面 OCR 结果，找到搜索框
 ```bash
-python {baseDir}/agent.py get_ocr_result '{}'
+python {baseDir}/agent.py get_ocr_result
 ```
 
-2. 从返回结果中找到 "搜索" 或搜索图标的 center 坐标，点击搜索框
+2. 从返回结果中找到 "搜索" 的 center 坐标，点击搜索框
 ```bash
 # 假设搜索框 center 为 [2065, 362]
-python {baseDir}/agent.py click_coordinate '{"x": 2065, "y": 362}'
+python {baseDir}/agent.py click_coordinate --x 2065 --y 362
 ```
 
 3. 在搜索框输入联系人名字
 ```bash
-python {baseDir}/agent.py click_and_type '{"content": "张三"}'
+python {baseDir}/agent.py click_and_type --content "张三"
 ```
 
 4. 等待搜索结果加载，再次 OCR 识别搜索结果
 ```bash
-python {baseDir}/agent.py get_ocr_result '{}'
+python {baseDir}/agent.py get_ocr_result
 ```
 
 5. 从结果中找到目标联系人 "张三" 的 center 坐标，点击进入聊天
 ```bash
 # 假设联系人 center 为 [2200, 450]
-python {baseDir}/agent.py click_coordinate '{"x": 2200, "y": 450}'
+python {baseDir}/agent.py click_coordinate --x 2200 --y 450
 ```
 
 6. 发送消息
 ```bash
-python {baseDir}/agent.py send_message '{"message": "你好，明天开会"}'
+python {baseDir}/agent.py send_message --message "你好，明天开会"
 ```
 
-**完整流程说明：**
+**完整流程图：**
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  用户请求: "给张三发消息：你好，明天开会"                      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤1: get_ocr_result                                        │
-│   └─ 获取界面元素，定位搜索框                                 │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤2: click_coordinate (搜索框坐标)                         │
-│   └─ 点击搜索框，激活输入状态                                 │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤3: click_and_type (联系人名字)                           │
-│   └─ 输入 "张三"，触发搜索                                    │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤4: get_ocr_result                                        │
-│   └─ 识别搜索结果列表，找到目标联系人                         │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤5: click_coordinate (联系人坐标)                         │
-│   └─ 点击联系人，进入聊天窗口                                 │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤6: send_message                                          │
-│   └─ 发送消息 "你好，明天开会"                                │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-                    ┌──────────────┐
-                    │   完成 ✓      │
-                    └──────────────┘
+用户请求: "给张三发消息：你好，明天开会"
+                    │
+                    ▼
+步骤1: get_ocr_result ──→ 定位搜索框
+                    │
+                    ▼
+步骤2: click_coordinate ──→ 点击搜索框
+                    │
+                    ▼
+步骤3: click_and_type ──→ 输入 "张三"
+                    │
+                    ▼
+步骤4: get_ocr_result ──→ 找到联系人
+                    │
+                    ▼
+步骤5: click_coordinate ──→ 点击联系人
+                    │
+                    ▼
+步骤6: send_message ──→ 发送消息
+                    │
+                    ▼
+                  完成 ✓
 ```
 
 **关键点：**
-- 每次 `get_ocr_result` 返回的 `center` 坐标可直接用于 `click_coordinate`
+- `get_ocr_result` 返回的 `center` 坐标可直接用于 `click_coordinate`
 - 搜索后需要重新 OCR 获取搜索结果
-- `send_message` 会自动定位输入框，无需手动点击
+- `send_message` 会自动定位输入框
 
-### 示例6：查看谁和我说话了，说了什么
+### 示例5：查看谁和我说话了，说了什么
 
-**用户说**："看看谁给我发消息了"、"帮我查看未读消息"
+**用户说**："看看谁给我发消息了"
 
 **执行步骤：**
 
 1. 获取当前微信界面 OCR 结果
 ```bash
-python {baseDir}/agent.py get_ocr_result '{}'
+python {baseDir}/agent.py get_ocr_result
 ```
 
-2. 解析返回结果，识别聊天列表中的信息：
-   - 联系人名字
-   - 消息预览内容
-   - 时间戳
-   - 未读标记（如"[3条]"）
+2. 解析返回结果，识别聊天列表中的信息：联系人名字、消息预览、时间戳、未读标记
 
 **返回数据示例：**
 ```json
@@ -601,84 +542,26 @@ python {baseDir}/agent.py get_ocr_result '{}'
       {"text": "张三", "center": [2200, 400], "scores": 0.98},
       {"text": "14:19", "center": [2346, 400], "scores": 0.95},
       {"text": "你好，明天开会", "center": [2250, 430], "scores": 0.92},
-      {"text": "[3条]李东阳", "center": [2200, 500], "scores": 0.96},
-      {"text": "收到，谢谢", "center": [2250, 530], "scores": 0.94}
+      {"text": "[3条]李东阳", "center": [2200, 500], "scores": 0.96}
     ],
-    "count": 5
+    "count": 4
   }
 }
 ```
 
-3. 如果需要查看某个聊天的详细内容，点击进入
+3. 如果需要查看某个聊天的详细内容
 ```bash
-# 点击 "张三" 进入聊天详情
-python {baseDir}/agent.py click_coordinate '{"x": 2200, "y": 400}'
+python {baseDir}/agent.py click_coordinate --x 2200 --y 400
 ```
 
 4. 再次 OCR 获取聊天详情
 ```bash
-python {baseDir}/agent.py get_ocr_result '{}'
+python {baseDir}/agent.py get_ocr_result
 ```
 
-5. 如果需要查看更多历史消息，向上滚动
+5. 如果需要查看更多历史消息
 ```bash
-python {baseDir}/agent.py scroll '{"direction": "up", "amount": 300}'
-```
-
-6. 再次 OCR 获取更多聊天记录
-```bash
-python {baseDir}/agent.py get_ocr_result '{}'
-```
-
-**完整流程说明：**
-```
-┌─────────────────────────────────────────────────────────────┐
-│  用户请求: "看看谁给我发消息了"                                │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤1: get_ocr_result                                        │
-│   └─ 识别聊天列表，获取联系人、消息预览、时间                   │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 解析结果，告诉用户：                                          │
-│   - 张三 14:19: "你好，明天开会"                              │
-│   - 李东阳 [3条]: "收到，谢谢"                                │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                ┌───────────┴───────────┐
-                │ 用户想查看详情？        │
-                └───────────┬───────────┘
-                      是    │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤2: click_coordinate (联系人坐标)                         │
-│   └─ 点击联系人，进入聊天窗口                                 │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤3: get_ocr_result                                        │
-│   └─ 识别聊天详情内容                                        │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                ┌───────────┴───────────┐
-                │ 需要查看更多历史？      │
-                └───────────┬───────────┘
-                      是    │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 步骤4: scroll + get_ocr_result                               │
-│   └─ 向上滚动，加载更多聊天记录                               │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-                    ┌──────────────┐
-                    │   完成 ✓      │
-                    └──────────────┘
+python {baseDir}/agent.py scroll --direction up --amount 300
 ```
 
 **关键点：**
@@ -686,6 +569,65 @@ python {baseDir}/agent.py get_ocr_result '{}'
 - 未读消息常有 "[N条]" 标记
 - 进入聊天后需要重新 OCR 获取详情
 - 向上滚动可查看历史记录
+
+### 示例6：滚动查看历史聊天记录
+
+**用户说**："查看我和张三的历史聊天记录"
+
+**执行步骤：**
+
+1. 先通过搜索找到联系人并进入聊天（参考示例4的前5步）
+
+2. 获取当前聊天界面 OCR 结果
+```bash
+python {baseDir}/agent.py get_ocr_result
+```
+
+3. 向上滚动查看更早的消息
+```bash
+python {baseDir}/agent.py scroll --direction up --amount 500
+```
+
+4. 再次 OCR 获取滚动后的消息
+```bash
+python {baseDir}/agent.py get_ocr_result
+```
+
+5. 重复步骤3-4直到找到目标内容
+
+**完整流程图：**
+```
+用户请求: "查看我和张三的历史聊天记录"
+                    │
+                    ▼
+步骤1: 搜索并进入张三聊天（参考示例4）
+                    │
+                    ▼
+步骤2: get_ocr_result ──→ 识别当前消息
+                    │
+                    ▼
+        ┌───────────┴───────────┐
+        │ 找到目标内容？          │
+        └───────────┬───────────┘
+              否    │
+                    ▼
+步骤3: scroll --direction up ──→ 向上滚动
+                    │
+                    ▼
+步骤4: get_ocr_result ──→ 识别新消息
+                    │
+                    └──────────┐
+                               │
+                    ┌──────────┘
+                    ▼
+                  完成 ✓
+```
+
+**关键点：**
+- 向上滚动加载历史消息
+- 每次滚动后需要重新 OCR
+- 滚动量 `--amount` 可根据需要调整（默认300像素）
+- 可以指定滚动位置 `--x --y` 在特定区域滚动
 
 ---
 
@@ -699,7 +641,6 @@ python {baseDir}/agent.py get_ocr_result '{}'
 | 找不到窗口 | 自动尝试 Ctrl+Alt+W 唤醒 | "未找到微信窗口，已尝试唤醒" |
 | OCR 结果为空 | 返回空数组 `results: []` | "未能识别到文字，请确保微信窗口可见" |
 | 点击/输入失败 | 返回 `status: "error"` | "操作失败，请重试" |
-| 参数格式错误 | 返回错误信息 | "参数 JSON 格式错误" |
 
 ---
 
@@ -732,8 +673,6 @@ python {baseDir}/agent.py get_ocr_result '{}'
 pip install pyautogui pygetwindow Pillow pyperclip rapidocr-onnxruntime numpy pywinauto psutil pywin32
 ```
 
-**依赖说明：**
-
 | 包名 | 用途 |
 |------|------|
 | pyautogui | 鼠标点击、键盘操作、滚动 |
@@ -752,13 +691,13 @@ pip install pyautogui pygetwindow Pillow pyperclip rapidocr-onnxruntime numpy py
 
 | 动作 | 说明 | 必需参数 | 可选参数 |
 |------|------|----------|----------|
-| screenshot | 截图 | 无 | save_path |
+| screenshot | 截图 | 无 | --save_path |
 | get_wechat_status | 获取微信状态 | 无 | 无 |
 | get_ocr_result | OCR 识别 | 无 | 无 |
-| click_coordinate | 点击坐标 | x, y | 无 |
-| click_and_type | 输入文字 | content | x, y, send_enter |
-| send_message | 发送消息 | message | 无 |
-| scroll | 滚动页面 | 无 | direction, amount, x, y |
+| click_coordinate | 点击坐标 | --x, --y | 无 |
+| click_and_type | 输入文字 | --content | --x, --y, --send_enter |
+| send_message | 发送消息 | --message | 无 |
+| scroll | 滚动页面 | 无 | --direction, --amount, --x, --y |
 | get_page_context | 获取页面上下文 | 无 | 无 |
 
 ---
@@ -799,7 +738,7 @@ screen_y = window_top + relative_y
 ## 11. 注意事项
 
 1. **坐标系统**：所有坐标均为屏幕绝对坐标，左上角为 (0, 0)
-2. **JSON 格式**：参数必须是合法的 JSON 字符串，用单引号包裹
+2. **参数格式**：使用 `--参数名 参数值` 格式，无需 JSON
 3. **消息发送**：`send_message` 会自动定位输入框，无需手动点击
 4. **窗口前置**：所有操作都会自动将微信窗口置顶
 5. **无缓存**：每次 OCR 和截图都获取最新画面

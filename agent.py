@@ -470,47 +470,70 @@ if __name__ == "__main__":
     import json
     
     parser = argparse.ArgumentParser(description="微信自动化工具")
-    parser.add_argument("action", help="执行动作",
-                        choices=["screenshot", "get_ocr_result", "click_coordinate",
-                                 "click_and_type", "scroll", "get_page_context",
-                                 "get_wechat_status", "send_message"])
-    parser.add_argument("params", nargs="?", default="{}", help="JSON 格式参数")
+    
+    # 使用子命令方式，每个动作有独立参数
+    subparsers = parser.add_subparsers(dest="action", help="执行动作")
+    
+    # screenshot
+    p_screenshot = subparsers.add_parser("screenshot", help="截图")
+    p_screenshot.add_argument("--save_path", type=str, default=None, help="保存路径")
+    
+    # get_wechat_status
+    subparsers.add_parser("get_wechat_status", help="获取微信状态")
+    
+    # get_ocr_result
+    subparsers.add_parser("get_ocr_result", help="OCR识别")
+    
+    # click_coordinate
+    p_click = subparsers.add_parser("click_coordinate", help="点击坐标")
+    p_click.add_argument("--x", type=int, required=True, help="X坐标")
+    p_click.add_argument("--y", type=int, required=True, help="Y坐标")
+    
+    # click_and_type
+    p_type = subparsers.add_parser("click_and_type", help="输入文字")
+    p_type.add_argument("--content", type=str, required=True, help="文字内容")
+    p_type.add_argument("--x", type=int, default=None, help="点击X坐标")
+    p_type.add_argument("--y", type=int, default=None, help="点击Y坐标")
+    p_type.add_argument("--send_enter", action="store_true", help="输入后按回车")
+    
+    # scroll
+    p_scroll = subparsers.add_parser("scroll", help="滚动")
+    p_scroll.add_argument("--direction", type=str, default="down", choices=["up", "down"], help="方向")
+    p_scroll.add_argument("--amount", type=int, default=300, help="滚动量")
+    p_scroll.add_argument("--x", type=int, default=None, help="X坐标")
+    p_scroll.add_argument("--y", type=int, default=None, help="Y坐标")
+    
+    # get_page_context
+    subparsers.add_parser("get_page_context", help="获取页面上下文")
+    
+    # send_message
+    p_send = subparsers.add_parser("send_message", help="发送消息")
+    p_send.add_argument("--message", type=str, required=True, help="消息内容")
+    
     args = parser.parse_args()
     
-    try:
-        params = json.loads(args.params) if args.params else {}
-    except json.JSONDecodeError:
-        print(json.dumps({"status": "error", "message": "参数 JSON 格式错误"}))
+    if args.action is None:
+        parser.print_help()
         sys.exit(1)
     
     result = {"status": "error", "message": "未知操作"}
     
     if args.action == "screenshot":
-        result = screenshot(params.get("save_path"))
+        result = screenshot(args.save_path)
     elif args.action == "get_ocr_result":
         result = get_ocr_result()
     elif args.action == "click_coordinate":
-        result = click_coordinate(params.get("x"), params.get("y"))
+        result = click_coordinate(args.x, args.y)
     elif args.action == "click_and_type":
-        result = click_and_type(
-            params.get("content"),
-            params.get("x"),
-            params.get("y"),
-            params.get("send_enter", False)
-        )
+        result = click_and_type(args.content, args.x, args.y, args.send_enter)
     elif args.action == "scroll":
-        result = scroll(
-            params.get("direction", "down"), 
-            params.get("amount", 300),
-            params.get("x"),
-            params.get("y")
-        )
+        result = scroll(args.direction, args.amount, args.x, args.y)
     elif args.action == "get_page_context":
         result = get_page_context()
     elif args.action == "get_wechat_status":
         result = get_wechat_status()
     elif args.action == "send_message":
-        success, err = send_message_to_current(params.get("message"))
+        success, err = send_message_to_current(args.message)
         if success:
             result = {"status": "success", "message": "消息发送成功"}
         else:
