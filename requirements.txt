@@ -8,5 +8,6 @@ numpy<2.0
 psutil>=5.9.0
 pywinauto>=0.6.8
 pywin32>=305
-rapidocr>=1.0.0
+rapidocr>=3.0.0
+onnxruntime>=1.15.0
 xzgutil>=2.5.0

@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 优化版 OCR 模块
+- 多尺度检测减少文字遗漏
 - 增强图像预处理
-- 优化 OCR 参数
-- 提高识别准确率
+- 结果去重合并
 """
 import cv2
 import numpy as np
@@ -17,6 +17,13 @@ from rapidocr import RapidOCR
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# 配置参数
+OCR_CONFIG = {
+    'min_confidence': 0.2,          # 降低置信度阈值，减少遗漏
+    'scales': [2.0, 3.0],           # 多尺度检测
+    'use_multi_scale': True,        # 是否启用多尺度
+    'iou_threshold': 0.3,           # 去重IOU阈值
+}
 
 _engine = None
 
@@ -38,7 +45,7 @@ def ocr_endpoint(win, word=None, fast_mode=False):
     Args:
         win: 窗口对象
         word: 搜索关键词（可选）
-        fast_mode: 快速模式（跳过预处理）
+        fast_mode: 快速模式（跳过多尺度检测）
     
     Returns:
         list: OCR 结果
@@ -53,89 +60,152 @@ def ocr_endpoint(win, word=None, fast_mode=False):
             logger.warning("截图失败")
             return []
         
-        # 2. 图像预处理
-        if fast_mode:
-            img = _preprocess_fast(screenshot)
-            scale = 1.0
+        all_results = []
+        
+        if fast_mode or not OCR_CONFIG['use_multi_scale']:
+            # 单尺度检测
+            img, scale = _preprocess_enhanced(screenshot, scale_factor=2.0)
+            results = _run_ocr(img, scale, win_left, win_top)
+            all_results.extend(results)
         else:
-            img, scale = _preprocess_enhanced(screenshot)
-        
-        # 3. OCR 识别
-        engine = get_engine()
-        ocr_result = engine(img, use_det=True, use_cls=False, use_rec=True)
-        
-        # 4. 解析结果
-        if ocr_result is None:
-            return []
-        
-        if hasattr(ocr_result, 'boxes') and ocr_result.boxes is not None:
-            boxes = ocr_result.boxes
-            txts = ocr_result.txts if ocr_result.txts else []
-            scores = ocr_result.scores if ocr_result.scores else []
-        elif isinstance(ocr_result, tuple) and len(ocr_result) > 0:
-            raw_results = ocr_result[0]
-            if raw_results is None:
-                return []
-            boxes = [item[0] for item in raw_results if len(item) >= 3]
-            txts = [str(item[1]).strip() for item in raw_results if len(item) >= 3]
-            scores = [item[2] for item in raw_results if len(item) >= 3]
-        else:
-            return []
-        
-        if len(boxes) == 0:
-            return []
-        
-        # 5. 处理结果（坐标还原到原始尺寸）
-        processed_items = []
-        for i in range(len(boxes)):
-            try:
-                box = boxes[i]
-                text = txts[i] if i < len(txts) else ""
-                score = scores[i] if i < len(scores) else 0.0
-                
-                if not text or score < 0.3:
-                    continue
-                
-                box_np = np.array(box, dtype=np.float32).reshape(-1, 2)
-                # 坐标还原（除以缩放比例）
-                box_np = box_np / scale
-                box_np[:, 0] += win_left
-                box_np[:, 1] += win_top
-                screen_box = box_np.astype(np.int32).tolist()
-                
-                x_coords = [p[0] for p in screen_box]
-                y_coords = [p[1] for p in screen_box]
-                x_min, x_max = min(x_coords), max(x_coords)
-                y_min, y_max = min(y_coords), max(y_coords)
-                center = [(x_min + x_max) // 2, (y_min + y_max) // 2]
-                
-                processed_items.append({
-                    'text': text,
-                    'scores': float(score),
-                    'box': screen_box,
-                    'center': center,
-                    'total_width': x_max - x_min,
-                    'total_height': y_max - y_min,
-                    'x_min': x_min,
-                    'x_max': x_max,
-                    'y_min': y_min,
-                    'y_max': y_max
-                })
-            except Exception:
-                continue
+            # 多尺度检测，合并结果
+            for scale_factor in OCR_CONFIG['scales']:
+                img, scale = _preprocess_enhanced(screenshot, scale_factor=scale_factor)
+                results = _run_ocr(img, scale, win_left, win_top)
+                all_results.extend(results)
+            
+            # 去重合并
+            all_results = _deduplicate_results(all_results)
         
         elapsed = time.time() - start_time
-        logger.info(f"OCR 完成: {elapsed:.2f}s, 识别到 {len(processed_items)} 个文本")
+        logger.info(f"OCR 完成: {elapsed:.2f}s, 识别到 {len(all_results)} 个文本")
         
-        # 6. 关键词匹配
+        # 关键词匹配
         if word is None:
-            return processed_items
+            return all_results
         
-        return _match_keyword(processed_items, word)
+        return _match_keyword(all_results, word)
         
     except Exception as e:
         logger.error(f"OCR 识别失败: {e}")
         return []
+
+
+def _run_ocr(img, scale, win_left, win_top):
+    """执行单次OCR并返回处理后的结果"""
+    engine = get_engine()
+    ocr_result = engine(img, use_det=True, use_cls=False, use_rec=True)
+    
+    if ocr_result is None:
+        return []
+    
+    # 解析结果
+    if hasattr(ocr_result, 'boxes') and ocr_result.boxes is not None:
+        boxes = ocr_result.boxes
+        txts = ocr_result.txts if ocr_result.txts else []
+        scores = ocr_result.scores if ocr_result.scores else []
+    elif isinstance(ocr_result, tuple) and len(ocr_result) > 0:
+        raw_results = ocr_result[0]
+        if raw_results is None:
+            return []
+        boxes = [item[0] for item in raw_results if len(item) >= 3]
+        txts = [str(item[1]).strip() for item in raw_results if len(item) >= 3]
+        scores = [item[2] for item in raw_results if len(item) >= 3]
+    else:
+        return []
+    
+    if len(boxes) == 0:
+        return []
+    
+    # 处理结果（坐标还原）
+    processed_items = []
+    min_conf = OCR_CONFIG['min_confidence']
+    
+    for i in range(len(boxes)):
+        try:
+            box = boxes[i]
+            text = txts[i] if i < len(txts) else ""
+            score = scores[i] if i < len(scores) else 0.0
+            
+            if not text or score < min_conf:
+                continue
+            
+            box_np = np.array(box, dtype=np.float32).reshape(-1, 2)
+            box_np = box_np / scale
+            box_np[:, 0] += win_left
+            box_np[:, 1] += win_top
+            screen_box = box_np.astype(np.int32).tolist()
+            
+            x_coords = [p[0] for p in screen_box]
+            y_coords = [p[1] for p in screen_box]
+            x_min, x_max = min(x_coords), max(x_coords)
+            y_min, y_max = min(y_coords), max(y_coords)
+            center = [(x_min + x_max) // 2, (y_min + y_max) // 2]
+            
+            processed_items.append({
+                'text': text,
+                'scores': float(score),
+                'box': screen_box,
+                'center': center,
+                'total_width': x_max - x_min,
+                'total_height': y_max - y_min,
+                'x_min': x_min,
+                'x_max': x_max,
+                'y_min': y_min,
+                'y_max': y_max
+            })
+        except Exception:
+            continue
+    
+    return processed_items
+
+
+def _deduplicate_results(items):
+    """基于位置和文本的去重"""
+    if not items:
+        return items
+    
+    # 按置信度排序，保留高置信度结果
+    items = sorted(items, key=lambda x: x['scores'], reverse=True)
+    
+    unique = []
+    for item in items:
+        is_duplicate = False
+        for existing in unique:
+            # 检查位置重叠
+            iou = _calculate_iou(item, existing)
+            if iou > OCR_CONFIG['iou_threshold']:
+                # 位置重叠，检查文本相似度
+                if item['text'] == existing['text']:
+                    is_duplicate = True
+                    break
+                # 文本不同但位置重叠，保留更长的文本
+                if len(item['text']) > len(existing['text']):
+                    unique.remove(existing)
+                    break
+        
+        if not is_duplicate:
+            unique.append(item)
+    
+    return unique
+
+
+def _calculate_iou(item1, item2):
+    """计算两个区域的IOU"""
+    x1 = max(item1['x_min'], item2['x_min'])
+    y1 = max(item1['y_min'], item2['y_min'])
+    x2 = min(item1['x_max'], item2['x_max'])
+    y2 = min(item1['y_max'], item2['y_max'])
+    
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    
+    intersection = (x2 - x1) * (y2 - y1)
+    area1 = (item1['x_max'] - item1['x_min']) * (item1['y_max'] - item1['y_min'])
+    area2 = (item2['x_max'] - item2['x_min']) * (item2['y_max'] - item2['y_min'])
+    union = area1 + area2 - intersection
+    
+    return intersection / union if union > 0 else 0.0
 
 
 def _get_window_screenshot(win):
@@ -169,8 +239,12 @@ def _preprocess_fast(img):
     return img
 
 
-def _preprocess_enhanced(img):
+def _preprocess_enhanced(img, scale_factor=2.0):
     """增强预处理（提高识别率）
+    
+    Args:
+        img: 输入图像
+        scale_factor: 缩放比例
     
     Returns:
         tuple: (处理后的图像, 缩放比例)
@@ -187,7 +261,7 @@ def _preprocess_enhanced(img):
     
     # 2. 放大图像（针对小字，提高识别率）
     h, w = img_rgb.shape[:2]
-    scale = 2.0 if min(h, w) < 1000 else 1.5
+    scale = scale_factor
     if scale > 1:
         img_rgb = cv2.resize(img_rgb, None, fx=scale, fy=scale, 
                             interpolation=cv2.INTER_CUBIC)
@@ -198,17 +272,20 @@ def _preprocess_enhanced(img):
     # 4. 去噪（双边滤波保留边缘）
     denoised = cv2.bilateralFilter(gray, 9, 75, 75)
     
-    # 5. 对比度增强（CLAHE）- 调整参数提高效果
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+    # 5. 对比度增强（CLAHE）
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(denoised)
     
-    # 6. 锐化 - 使用更温和的核
+    # 6. 锐化
     kernel_sharpen = np.array([
         [0, -1, 0],
         [-1, 5, -1],
         [0, -1, 0]
     ])
     sharpened = cv2.filter2D(enhanced, -1, kernel_sharpen)
+    
+    # DEBUG: 保存预处理后的图片
+    cv2.imwrite("debug_preprocessed.png", cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR))
     
     # 7. 转回 RGB
     return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB), scale
