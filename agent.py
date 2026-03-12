@@ -383,6 +383,22 @@ class WeChatManager:
         """获取页面上下文（OCR，每次获取最新截图）"""
         return self.get_ocr_result()
     
+    # ==================== 控件获取功能（已禁用，速度太慢）====================
+    # def get_controls(self, control_type: str = None, name_filter: str = None,
+    #                  max_depth: int = 10, include_invisible: bool = False) -> Dict:
+    #     """获取微信窗口的所有控件信息"""
+    #     pass
+    # 
+    # def _traverse_controls(self, element, controls: list, depth: int, max_depth: int,
+    #                       control_type: str, name_filter: str, include_invisible: bool):
+    #     """递归遍历控件树"""
+    #     pass
+    # 
+    # def _get_control_info(self, element) -> Optional[Dict]:
+    #     """获取单个控件的信息"""
+    #     pass
+    # ==========================================================================
+    
     def take_screenshot(self, save_path: str = None) -> Dict:
         """截图"""
         img = self.capture()
