@@ -86,46 +86,60 @@ class WeChatManager:
         self._stop_event = threading.Event()  # 用于立即停止监控的事件
     
     def _flash_capture_area(self, left: int, top: int, right: int, bottom: int, duration: float = 0.5):
-        """显示截图闪烁效果（用系统图片查看器打开截图）
+        """显示截图闪烁效果（创建独立进程显示图片，自动关闭）
         
-        简单可靠的方式：保存截图到临时文件，用系统默认查看器打开。
-        相比 tkinter 方式，避免了后台线程不稳定的问题。
+        通过启动子进程运行 tkinter 窗口显示截图，duration 秒后自动关闭。
+        子进程方式确保不影响主线程稳定性。
         
         Args:
-            left, top, right, bottom: 截图区域的屏幕坐标（未使用，保留兼容性）
+            left, top, right, bottom: 截图区域的屏幕坐标
             duration: 显示时间（秒），默认0.5秒
         """
         import tempfile
-        import subprocess
         
         try:
-            # 先截取当前微信窗口
-            img = self.capture(show_flash=False)
-            if not img:
-                logger.warning("闪烁显示失败: 无法截图")
-                return
-            
             # 保存到临时文件
             temp_dir = tempfile.gettempdir()
-            temp_path = os.path.join(temp_dir, "wechat_screenshot_flash.png")
+            temp_path = os.path.join(temp_dir, "wechat_flash.png")
+            
+            # 使用 ImageGrab 截取指定区域
+            bbox = (left, top, right, bottom)
+            img = ImageGrab.grab(bbox=bbox)
             img.save(temp_path)
             
-            # 用系统默认图片查看器打开
-            if sys.platform == 'win32':
-                # Windows: 使用系统默认程序打开
-                subprocess.Popen(['start', '', temp_path], shell=True)
-            else:
-                # macOS / Linux
-                subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', temp_path])
-            
-            # 等待指定时间
-            time.sleep(duration)
-            
-            # 关闭查看器（Windows 上关闭"照片"应用）
-            if sys.platform == 'win32':
-                # 尝试关闭照片查看器
-                subprocess.Popen(['taskkill', '/F', '/IM', 'PhotosApp.exe'], 
-                               shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # 创建一个独立的 Python 脚本显示图片
+            flash_script = f'''
+import tkinter as tk
+from PIL import Image, ImageTk
+import time
+import sys
+
+root = tk.Tk()
+root.overrideredirect(True)
+root.attributes('-topmost', True)
+
+# 加载图片
+img = Image.open(r"{temp_path}")
+photo = ImageTk.PhotoImage(img)
+
+label = tk.Label(root, image=photo)
+label.pack()
+
+# 设置窗口位置
+root.geometry(f"{{img.width}}x{{img.height}}+{left}+{top}")
+
+# 自动关闭
+def auto_close():
+    root.destroy()
+
+root.after(int({duration} * 1000), auto_close)
+root.mainloop()
+'''
+            # 启动子进程
+            subprocess.Popen(
+                [sys.executable, '-c', flash_script],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            )
             
         except Exception as e:
             logger.warning(f"闪烁显示失败: {e}")
@@ -223,20 +237,26 @@ class WeChatManager:
                 - 成功: (window_object, None)
                 - 失败: (None, error_message)
         """
-        # 步骤1: 查找微信窗口（最多尝试 3 次）
+        # 步骤1: 查找微信窗口（最多尝试 3 次，每次检查停止信号）
         w = None
         for attempt in range(3):
+            # 检查停止信号
+            if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                return None, "stopped"
             w = self._find_gw_window()
             if w:
                 break
-            time.sleep(0.3)
+            time.sleep(0.1)  # 缩短等待时间
         
         # 步骤2: 判断窗口状态并处理
         if not w:
             # 窗口不存在（微信在托盘区），用快捷键唤醒（最多尝试 3 次）
             for attempt in range(3):
+                # 检查停止信号
+                if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                    return None, "stopped"
                 pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
-                time.sleep(0.8)
+                time.sleep(0.3)  # 缩短等待时间
                 w = self._find_gw_window()
                 if w:
                     break
@@ -252,12 +272,15 @@ class WeChatManager:
         # 步骤4: 检查窗口是否最小化
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            time.sleep(0.3)
+            time.sleep(0.1)
         
-        # 步骤5: 激活窗口到前台（最多尝试 3 次）
+        # 步骤5: 激活窗口到前台（最多尝试 3 次，每次检查停止信号）
         for attempt in range(3):
+            # 检查停止信号
+            if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                return None, "stopped"
             self._bring_window_to_front(w)
-            time.sleep(0.3)
+            time.sleep(0.1)
             
             # 验证窗口是否真的在前台
             foreground_hwnd = win32gui.GetForegroundWindow()
@@ -284,7 +307,7 @@ class WeChatManager:
             # ===== 方法1: 先恢复窗口（如果最小化）=====
             if win32gui.IsIconic(hwnd):
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                time.sleep(0.2)
+                time.sleep(0.05)
             
             # ===== 方法2: 使用 AttachThreadInput 绕过 SetForegroundWindow 限制 =====
             foreground_hwnd = win32gui.GetForegroundWindow()
@@ -326,18 +349,18 @@ class WeChatManager:
                 except Exception:
                     pass
             
-            time.sleep(0.3)
+            time.sleep(0.1)  # 缩短等待
             
             # ===== 方法5: 如果前面方法失败，使用模拟按键绕过限制 =====
             new_foreground = win32gui.GetForegroundWindow()
             if new_foreground != hwnd:
                 # 模拟按下 Alt 键（这会允许 SetForegroundWindow 工作）
                 win32api.keybd_event(0x12, 0, 0, 0)  # Alt down
-                time.sleep(0.1)
+                time.sleep(0.05)
                 win32gui.SetForegroundWindow(hwnd)
-                time.sleep(0.1)
+                time.sleep(0.05)
                 win32api.keybd_event(0x12, 0, 2, 0)  # Alt up
-                time.sleep(0.2)
+                time.sleep(0.1)
             
             # 验证激活结果
             new_foreground = win32gui.GetForegroundWindow()
@@ -347,7 +370,7 @@ class WeChatManager:
                 # ===== 方法6: 最后尝试 pygetwindow =====
                 try:
                     w.activate()
-                    time.sleep(0.3)
+                    time.sleep(0.1)
                     new_foreground = win32gui.GetForegroundWindow()
                     if new_foreground == hwnd:
                         return True
@@ -424,13 +447,17 @@ class WeChatManager:
         
         # 验证窗口是否已激活到前台，最多尝试 3 次
         for attempt in range(3):
+            # 检查停止信号
+            if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                return None
+            
             foreground_hwnd = win32gui.GetForegroundWindow()
             if foreground_hwnd == hwnd:
                 break  # 微信已在前台
             
             logger.debug(f"微信窗口未在前台 (尝试 {attempt + 1}/3)，重新激活...")
             self._bring_window_to_front(w)
-            time.sleep(0.3)
+            time.sleep(0.1)  # 缩短等待时间
         else:
             # 3 次尝试后仍未激活，但窗口句柄有效，仍可尝试用 Win32 API 截图
             logger.warning("微信窗口未能激活到前台，尝试直接截图")
@@ -1203,19 +1230,28 @@ class WeChatManager:
         
         Returns:
             Dict: {"status": "success/error", "message": "..."}
+
         """
         try:
+            # 检查停止信号
+            if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                return {"status": "error", "message": "stopped"}
+            
             # 确保窗口就绪
             w, error = self._ensure_window_ready()
             if error:
                 return {"status": "error", "message": error}
+            
+            # 再次检查停止信号
+            if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                return {"status": "error", "message": "stopped"}
             
             # 1. 点击联系人进入聊天
             click_result = self.click_contact(contact_name=contact_name)
             if click_result["status"] != "success":
                 return click_result
             
-            time.sleep(0.5)
+            time.sleep(0.3)  # 缩短等待
             
             # 2. 发送消息
             success, err = self.send_message(message)
@@ -1413,9 +1449,17 @@ class WeChatManager:
                     # 检测变化
                     monitor_result = self.monitor_chat_changes()
                     if monitor_result["status"] != "success":
-                        # 分段等待，检查停止信号
+                        # 检查是否是停止信号导致的错误
+                        if monitor_result.get("message") == "stopped":
+                            logger.info("检测到停止信号，停止监控")
+                            stats["stopped_by"] = "stop_signal"
+                            break
+                        
+                        # 其他错误，分段等待后继续
+                        logger.warning(f"监控检测失败: {monitor_result.get('message')}")
                         for _ in range(int(interval * 10)):
                             if os.path.exists(self.STOP_SIGNAL_FILE) or not self._monitor_running:
+                                stats["stopped_by"] = "stop_signal"
                                 break
                             time.sleep(0.1)
                         continue
