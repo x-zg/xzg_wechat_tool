@@ -901,6 +901,12 @@ class WeChatManager:
                 logger.error("OCR 未识别到内容")
                 return {"status": "error", "message": "OCR 未识别到内容"}
             
+            # 打印 OCR 原始识别结果
+            logger.info(f"OCR 识别到 {len(result)} 条文本:")
+            for i, item in enumerate(result):
+                box, text, conf = item
+                logger.info(f"  OCR[{i}]: '{text}' (置信度: {conf:.2f}, 位置: x={box[0][0]:.0f}, y={box[0][1]:.0f})")
+            
             # 解析 OCR 结果，提取联系人信息
             # result 格式: [[box, text, confidence], ...]
             contacts = []
