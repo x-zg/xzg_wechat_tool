@@ -727,20 +727,24 @@ class WeChatManager:
             if not rect:
                 return {"status": "error", "message": "无法获取窗口位置"}
             
-            # 左侧聊天列表区域（大约左侧 280 像素宽度）
-            chat_list_width = 280
-            chat_list_left = rect["left"]
-            chat_list_top = rect["top"] + 60  # 跳过搜索框
-            chat_list_right = rect["left"] + chat_list_width
-            chat_list_bottom = rect["bottom"]
-            
             # 截取聊天列表区域
             img = self.capture()
             if not img:
                 return {"status": "error", "message": "截图失败"}
             
+            # 左侧聊天列表区域（相对于图像的坐标）
+            # 图像坐标从 (0, 0) 开始
+            chat_list_width = 280
+            crop_left = 0  # 图像左边缘
+            crop_top = 60  # 跳过搜索框
+            crop_right = chat_list_width
+            crop_bottom = img.height  # 图像底部
+            
             # 裁剪左侧聊天列表区域
-            chat_list_img = img.crop((chat_list_left, chat_list_top, chat_list_right, chat_list_bottom))
+            chat_list_img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
+            
+            # 保存窗口位置用于后续计算点击坐标
+            self._window_rect = rect
             
             # OCR 识别（直接使用 numpy 数组）
             from rapidocr_onnxruntime import RapidOCR
@@ -826,10 +830,11 @@ class WeChatManager:
                         message_text = message_text[2:].strip()
                 
                 # 计算点击位置（转换回屏幕坐标）
-                if group:
+                if group and hasattr(self, '_window_rect'):
                     avg_y = sum(l["y"] for l in group) / len(group)
-                    click_x = chat_list_left + 140  # 列表中间位置
-                    click_y = chat_list_top + avg_y + 30  # 加上偏移，确保点击到项目
+                    # 转换回屏幕坐标：窗口左边 + 裁剪偏移 + 相对坐标
+                    click_x = self._window_rect["left"] + 140  # 列表中间位置
+                    click_y = self._window_rect["top"] + 60 + avg_y + 30  # 加上裁剪偏移
                     
                     contacts.append({
                         "index": i,
@@ -838,10 +843,10 @@ class WeChatManager:
                         "is_from_me": is_from_me,  # 新增：标记消息来源
                         "position": {"x": int(click_x), "y": int(click_y)},
                         "rect": {
-                            "left": chat_list_left,
-                            "top": int(chat_list_top + avg_y - 20),
-                            "right": chat_list_right,
-                            "bottom": int(chat_list_top + avg_y + 50)
+                            "left": self._window_rect["left"],
+                            "top": int(self._window_rect["top"] + 60 + avg_y - 20),
+                            "right": self._window_rect["left"] + 280,
+                            "bottom": int(self._window_rect["top"] + 60 + avg_y + 50)
                         }
                     })
             
@@ -1045,19 +1050,22 @@ class WeChatManager:
             return {"status": "error", "message": f"自动回复失败: {str(e)}"}
     
     def start_chat_monitor(self, reply_handler: callable = None, interval: float = 10.0, 
-                           max_loops: int = 100, auto_reply_message: str = None) -> Dict:
-        """启动聊天监控（阻塞式，智能回复）
+                           max_loops: int = 6, timeout: int = 60, 
+                           auto_reply_message: str = None) -> Dict:
+        """启动聊天监控（阻塞式，智能回复，有超时保护）
         
         智能回复逻辑：
         1. 首次运行：记录所有联系人的当前消息，标记为已回复（不回复历史消息）
         2. 定时检测：每10秒检查一次消息变化
         3. 区分消息来源：只有对方发的消息才回复（不是我发的）
         4. 回复成功 → 标记为已回复
+        5. 超时或达到最大循环次数 → 自动停止
         
         Args:
             reply_handler: 自定义回复处理函数 (contact_name, last_message) -> reply_message
             interval: 检查间隔（秒），默认10秒
-            max_loops: 最大循环次数
+            max_loops: 最大循环次数，默认6次
+            timeout: 超时时间（秒），默认60秒
             auto_reply_message: 自动回复的消息内容（如果不使用 reply_handler）
         
         Returns:
@@ -1065,12 +1073,13 @@ class WeChatManager:
         """
         logger.info("=" * 50)
         logger.info("启动智能聊天监控...")
-        logger.info(f"监控间隔: {interval}秒, 最大循环: {max_loops}次")
+        logger.info(f"监控间隔: {interval}秒, 最大循环: {max_loops}次, 超时: {timeout}秒")
         if auto_reply_message:
             logger.info(f"自动回复内容: {auto_reply_message}")
         logger.info("=" * 50)
         
         self._monitor_running = True
+        start_time = time.time()
         stats = {
             "loops": 0, 
             "replies_sent": 0, 
@@ -1080,12 +1089,18 @@ class WeChatManager:
         
         try:
             for loop in range(max_loops):
+                # 检查超时
+                elapsed = time.time() - start_time
+                if elapsed >= timeout:
+                    logger.info(f"达到超时时间 {timeout} 秒，自动停止监控")
+                    break
+                    
                 if not self._monitor_running:
                     logger.info("监控已停止")
                     break
                     
                 stats["loops"] = loop + 1
-                logger.info(f"\n----- 第 {stats['loops']} 次检查 -----")
+                logger.info(f"\n----- 第 {stats['loops']} 次检查 (已运行 {int(elapsed)} 秒) -----")
                 
                 # 检测变化
                 monitor_result = self.monitor_chat_changes()
@@ -1241,11 +1256,12 @@ def auto_reply(contact_name, message):
     """自动回复联系人"""
     return _manager.auto_reply_to_contact(contact_name=contact_name, message=message)
 
-def start_monitor(interval=10.0, max_loops=100, auto_reply_message=None):
-    """启动聊天监控（默认10秒间隔）"""
+def start_monitor(interval=10.0, max_loops=6, timeout=60, auto_reply_message=None):
+    """启动聊天监控（默认10秒间隔，6次循环，60秒超时）"""
     return _manager.start_chat_monitor(
         interval=interval, 
         max_loops=max_loops, 
+        timeout=timeout,
         auto_reply_message=auto_reply_message
     )
 
@@ -1312,8 +1328,9 @@ if __name__ == "__main__":
     
     # start_monitor
     p_monitor = subparsers.add_parser("start_monitor", help="启动聊天监控")
-    p_monitor.add_argument("--interval", type=float, default=3.0, help="检查间隔(秒)")
-    p_monitor.add_argument("--max_loops", type=int, default=100, help="最大循环次数")
+    p_monitor.add_argument("--interval", type=float, default=10.0, help="检查间隔(秒)")
+    p_monitor.add_argument("--max_loops", type=int, default=6, help="最大循环次数(默认6次,约1分钟)")
+    p_monitor.add_argument("--timeout", type=int, default=60, help="超时时间(秒),超过后自动停止")
     p_monitor.add_argument("--auto_reply", type=str, default=None, help="自动回复内容")
     
     args = parser.parse_args()
@@ -1355,6 +1372,7 @@ if __name__ == "__main__":
         result = start_monitor(
             interval=args.interval, 
             max_loops=args.max_loops, 
+            timeout=args.timeout,
             auto_reply_message=args.auto_reply
         )
     
