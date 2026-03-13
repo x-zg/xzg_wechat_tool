@@ -821,14 +821,14 @@ class WeChatManager:
     
     # ==================== 聊天列表监控功能 ====================
     
-    def get_chat_list(self, count: int = 5, show_flash: bool = True) -> Dict:
+    def get_chat_list(self, count: int = 5, show_flash: bool = False) -> Dict:
         """获取左侧聊天列表的前N个联系人
         
         通过 OCR 识别左侧聊天列表区域，提取联系人信息。
         
         Args:
             count: 获取的联系人数量（默认5个）
-            show_flash: 是否显示截图闪烁提示（默认开启）
+            show_flash: 是否显示截图闪烁提示（默认关闭，tkinter在后台线程不稳定）
         
         Returns:
             Dict: {
@@ -1067,6 +1067,7 @@ class WeChatManager:
             # 获取当前聊天列表状态
             current_result = self.get_chat_list()
             if current_result["status"] != "success":
+                logger.error(f"获取聊天列表失败: {current_result.get('message')}")
                 return current_result
             
             current_contacts = current_result["data"]["contacts"]
@@ -1075,6 +1076,17 @@ class WeChatManager:
             
             # 记录是否是首次监控（用于判断是否需要检测变化）
             is_first_run = len(self._contact_states) == 0
+            
+            # ===== 调试输出 =====
+            logger.info(f"===== 监控检测结果 =====")
+            logger.info(f"首次运行: {is_first_run}")
+            logger.info(f"当前联系人数量: {len(current_contacts)}")
+            for i, c in enumerate(current_contacts):
+                logger.info(f"  [{i}] {c['name']}: '{c.get('last_message', '')}' (is_from_me={c.get('is_from_me', False)})")
+            logger.info(f"已保存状态数量: {len(self._contact_states)}")
+            for name, state in self._contact_states.items():
+                logger.info(f"  已保存: {name} -> '{state.get('last_message', '')}' (is_from_me={state.get('is_from_me', False)}, replied={state.get('replied', False)})")
+            logger.info(f"========================")
             
             # ===== 重要：先对比变化，再初始化新联系人 =====
             
@@ -1467,78 +1479,28 @@ class WeChatManager:
         
         工作原理：
         1. 先尝试停止当前进程内的后台线程
-        2. 如果没有线程在运行，尝试通过 PID 文件停止其他进程
+        2. 清理 PID 文件
         """
+        logger.info("收到停止监控请求...")
+        
         # 方法1：停止当前进程内的后台线程
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_running = False
             self._stop_event.set()  # 发送停止信号，立即中断 Event.wait()
-            # 等待线程结束（最多等待3秒）
-            self._monitor_thread.join(timeout=3)
-            if not self._monitor_thread.is_alive():
-                return {"status": "success", "message": "已停止监控"}
+            logger.info("已发送停止信号")
         
-        # 方法2：通过 PID 文件停止其他进程
-        if not os.path.exists(self.MONITOR_PID_FILE):
-            # 重置状态
-            self._monitor_running = False
-            self._stop_event.set()  # 确保停止信号已设置
-            return {"status": "success", "message": "当前没有监控在运行"}
-        
+        # 方法2：清理 PID 文件
         try:
-            # 读取 PID
-            with open(self.MONITOR_PID_FILE, 'r') as f:
-                pid = int(f.read().strip())
-            
-            # 如果是当前进程，直接停止
-            if pid == os.getpid():
-                self._monitor_running = False
-                self._stop_event.set()  # 发送停止信号
+            if os.path.exists(self.MONITOR_PID_FILE):
                 os.remove(self.MONITOR_PID_FILE)
-                return {"status": "success", "message": "已停止监控"}
-            
-            # 检查进程是否存在
-            if not psutil.pid_exists(pid):
-                os.remove(self.MONITOR_PID_FILE)
-                return {"status": "success", "message": "监控进程已不存在，已清理 PID 文件"}
-            
-            # 获取进程信息
-            try:
-                process = psutil.Process(pid)
-            except psutil.NoSuchProcess:
-                os.remove(self.MONITOR_PID_FILE)
-                return {"status": "success", "message": "进程已不存在"}
-            
-            # 终止进程
-            try:
-                # 先尝试优雅终止
-                process.terminate()
-                # 等待最多3秒
-                try:
-                    process.wait(timeout=3)
-                except psutil.TimeoutExpired:
-                    # 如果还没终止，强制杀死
-                    process.kill()
-                
-            except psutil.NoSuchProcess:
-                pass
-            except psutil.AccessDenied:
-                return {"status": "error", "message": f"无权限终止监控进程 (PID={pid})，可能需要管理员权限"}
-            
-            # 清理 PID 文件
-            try:
-                os.remove(self.MONITOR_PID_FILE)
-            except Exception:
-                pass
-            
-            return {"status": "success", "message": f"已停止监控进程 (PID={pid})"}
-            
-        except ValueError:
-            try:
-                os.remove(self.MONITOR_PID_FILE)
-            except:
-                pass
-            return {"status": "error", "message": "PID 文件格式错误，已清理"}
+        except Exception:
+            pass
+        
+        # 重置状态
+        self._monitor_running = False
+        self._stop_event.set()
+        
+        return {"status": "success", "message": "已发送停止信号"}
             
         except Exception as e:
             return {"status": "error", "message": f"停止监控失败: {str(e)}"}
