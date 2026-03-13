@@ -1320,47 +1320,41 @@ class WeChatManager:
             logger.error(f"检查新消息失败: {e}")
             return {"status": "error", "message": f"检查新消息失败: {str(e)}"}
     
-    def start_chat_monitor(self, reply_handler: callable = None, interval: float = 10.0, 
-                           max_loops: int = 6, timeout: int = 60, 
-                           auto_reply_message: str = None) -> Dict:
-        """启动聊天监控（异步运行，立即返回）
+    def start_chat_monitor(self, interval: float = 5.0, max_loops: int = 12, 
+                           timeout: int = 60, auto_reply_message: str = None) -> Dict:
+        """启动聊天监控（同步模式，阻塞运行）
         
-        智能回复逻辑：
-        1. 首次运行：记录所有联系人的当前消息，标记为已回复（不回复历史消息）
-        2. 定时检测：每10秒检查一次消息变化
-        3. 区分消息来源：只有对方发的消息才回复（不是我发的）
-        4. 回复成功 → 标记为已回复
-        5. 超时或达到最大循环次数 → 自动停止
+        功能：
+        1. 同步监控微信聊天列表变化
+        2. 支持文件信号停止（创建 .monitor.stop 文件即可停止）
+        3. 微信窗口关闭时自动停止
+        4. 发现新消息时自动回复（如果设置了 auto_reply_message）
         
         Args:
-            reply_handler: 自定义回复处理函数 (contact_name, last_message) -> reply_message
-            interval: 检查间隔（秒），默认10秒
-            max_loops: 最大循环次数，默认6次
+            interval: 检查间隔（秒），默认5秒
+            max_loops: 最大循环次数，默认12次
             timeout: 超时时间（秒），默认60秒
-            auto_reply_message: 自动回复的消息内容（如果不使用 reply_handler）
+            auto_reply_message: 自动回复的消息内容
         
         Returns:
-            Dict: {"status": "success", "message": "监控已启动（后台运行）", "data": {...}}
+            Dict: {"status": "success", "message": "...", "data": {...}}
         """
         # 检查是否已有监控在运行
-        if self._monitor_running and self._monitor_thread and self._monitor_thread.is_alive():
-            return {"status": "error", "message": "监控已在运行中，请先停止当前监控"}
+        if self._monitor_running:
+            return {"status": "error", "message": "监控已在运行中"}
         
-        logger.info("启动智能聊天监控...")
+        logger.info("启动聊天监控（同步模式）...")
         if auto_reply_message:
             logger.info(f"自动回复内容: {auto_reply_message}")
         
-        # ===== 重要：在主线程中先确保微信窗口已就绪 =====
-        # Windows 限制后台线程操作前台窗口，所以必须在主线程中先激活窗口
+        # 确保微信窗口就绪
         w, error = self._ensure_window_ready()
         if error:
-            logger.error(f"无法激活微信窗口: {error}")
             return {"status": "error", "message": error}
         
         # 重置状态
         self._monitor_running = True
-        self._monitor_result = None
-        self._stop_event.clear()  # 清除停止事件
+        self._stop_event.clear()
         
         # 清除停止信号文件
         try:
@@ -1369,168 +1363,125 @@ class WeChatManager:
         except Exception:
             pass
         
-        # 定义监控线程函数
-        def _monitor_thread_func():
-            start_time = time.time()
-            stats = {
-                "loops": 0, 
-                "replies_sent": 0, 
-                "changes_detected": 0,
-                "contacts_monitored": len(self._contact_states)
-            }
-            
-            # 写入 PID 文件（用于跨进程停止）
+        # 写入 PID 文件
+        try:
+            with open(self.MONITOR_PID_FILE, 'w') as f:
+                f.write(str(os.getpid()))
+        except Exception:
+            pass
+        
+        start_time = time.time()
+        stats = {
+            "loops": 0, 
+            "replies_sent": 0, 
+            "stopped_by": None  # 停止原因
+        }
+        
+        try:
+            for loop in range(max_loops):
+                # 检查停止信号文件
+                if os.path.exists(self.STOP_SIGNAL_FILE):
+                    logger.info("检测到停止信号文件，停止监控")
+                    stats["stopped_by"] = "stop_signal"
+                    break
+                
+                # 检查微信窗口是否存在
+                w = self._find_gw_window()
+                if not w:
+                    logger.info("微信窗口已关闭，停止监控")
+                    stats["stopped_by"] = "window_closed"
+                    break
+                
+                # 检查超时
+                elapsed = time.time() - start_time
+                if elapsed >= timeout:
+                    logger.info(f"监控超时({timeout}秒)，自动停止")
+                    stats["stopped_by"] = "timeout"
+                    break
+                
+                stats["loops"] = loop + 1
+                
+                # 检测变化
+                monitor_result = self.monitor_chat_changes()
+                if monitor_result["status"] != "success":
+                    time.sleep(interval)
+                    continue
+                
+                # 智能回复
+                need_reply = monitor_result["data"]["need_reply_contacts"]
+                
+                if need_reply and auto_reply_message:
+                    for contact in need_reply:
+                        # 再次检查停止信号
+                        if os.path.exists(self.STOP_SIGNAL_FILE):
+                            break
+                        
+                        contact_name = contact["name"]
+                        reply_result = self.auto_reply_to_contact(contact_name, auto_reply_message)
+                        
+                        if reply_result["status"] == "success":
+                            stats["replies_sent"] += 1
+                            if contact_name in self._contact_states:
+                                self._contact_states[contact_name]["replied"] = True
+                            logger.info(f"已回复 {contact_name}: {auto_reply_message}")
+                        
+                        time.sleep(1)
+                
+                # 等待下次检查（分段检查停止信号）
+                for _ in range(int(interval * 10)):
+                    if os.path.exists(self.STOP_SIGNAL_FILE):
+                        stats["stopped_by"] = "stop_signal"
+                        break
+                    time.sleep(0.1)
+                else:
+                    continue
+                break
+        
+        except Exception as e:
+            logger.error(f"监控异常: {e}")
+        
+        finally:
+            # 清理文件
             try:
-                with open(self.MONITOR_PID_FILE, 'w') as f:
-                    f.write(str(os.getpid()))
+                if os.path.exists(self.MONITOR_PID_FILE):
+                    os.remove(self.MONITOR_PID_FILE)
             except Exception:
                 pass
             
             try:
-                for loop in range(max_loops):
-                    # 检查是否被停止（内存标志）
-                    if not self._monitor_running or self._stop_event.is_set():
-                        break
-                    
-                    # 检查停止信号文件（跨进程停止）
-                    if os.path.exists(self.STOP_SIGNAL_FILE):
-                        logger.info("检测到停止信号文件，停止监控")
-                        break
-                    
-                    # 检查超时
-                    elapsed = time.time() - start_time
-                    if elapsed >= timeout:
-                        logger.info(f"监控超时({timeout}秒)，自动停止")
-                        break
-                        
-                    stats["loops"] = loop + 1
-                    
-                    # 检测变化
-                    monitor_result = self.monitor_chat_changes()
-                    if monitor_result["status"] != "success":
-                        # 使用 Event.wait 替代 sleep，可被中断
-                        if self._stop_event.wait(interval):
-                            break
-                        continue
-                    
-                    # 智能回复（只回复需要回复的联系人）
-                    need_reply = monitor_result["data"]["need_reply_contacts"]
-                    
-                    if need_reply and (reply_handler or auto_reply_message):
-                        for contact in need_reply:
-                            # 检查是否被停止
-                            if not self._monitor_running or self._stop_event.is_set():
-                                break
-                                
-                            contact_name = contact["name"]
-                            last_message = contact["message"]
-                            
-                            # 确定回复内容
-                            if reply_handler:
-                                reply = reply_handler(contact_name, last_message)
-                            else:
-                                reply = auto_reply_message
-                            
-                            if reply:
-                                reply_result = self.auto_reply_to_contact(contact_name, reply)
-                                
-                                if reply_result["status"] == "success":
-                                    stats["replies_sent"] += 1
-                                    # 标记为已回复
-                                    self._contact_states[contact_name]["replied"] = True
-                                    logger.info(f"已回复 {contact_name}: {reply}")
-                                else:
-                                    logger.warning(f"回复失败: {reply_result['message']}")
-                                
-                                # 回复间隔（可中断）
-                                if self._stop_event.wait(1):
-                                    break
-                    
-                    stats["contacts_monitored"] = len(self._contact_states)
-                    # 使用 Event.wait 替代 sleep，可被中断
-                    if self._stop_event.wait(interval):
-                        break
-                
-            except Exception as e:
-                logger.error(f"监控线程异常: {e}")
+                if os.path.exists(self.STOP_SIGNAL_FILE):
+                    os.remove(self.STOP_SIGNAL_FILE)
+            except Exception:
+                pass
             
-            finally:
-                # 清理 PID 文件
-                try:
-                    if os.path.exists(self.MONITOR_PID_FILE):
-                        os.remove(self.MONITOR_PID_FILE)
-                except Exception:
-                    pass
-                
-                # 清理停止信号文件
-                try:
-                    if os.path.exists(self.STOP_SIGNAL_FILE):
-                        os.remove(self.STOP_SIGNAL_FILE)
-                except Exception:
-                    pass
-                
-                self._monitor_running = False
-                logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复")
-                
-                self._monitor_result = {
-                    "status": "success",
-                    "data": {
-                        "stats": stats,
-                        "contact_states": self._contact_states,
-                        "message": f"监控结束，共发送 {stats['replies_sent']} 条回复"
-                    }
-                }
-        
-        # 启动后台线程（非守护模式，确保监控完成）
-        self._monitor_thread = threading.Thread(target=_monitor_thread_func, daemon=False)
-        self._monitor_thread.start()
+            self._monitor_running = False
+            logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复")
         
         return {
             "status": "success",
-            "message": "监控已启动（后台运行）",
             "data": {
-                "interval": interval,
-                "max_loops": max_loops,
-                "timeout": timeout
+                "stats": stats,
+                "message": f"监控结束，共发送 {stats['replies_sent']} 条回复，停止原因: {stats['stopped_by']}"
             }
         }
     
     def stop_chat_monitor(self) -> Dict:
-        """停止聊天监控（支持线程内和跨进程停止）
+        """停止聊天监控（通过创建停止信号文件）
         
-        工作原理：
-        1. 创建停止信号文件（跨进程通信）
-        2. 设置内部停止标志
-        3. 清理 PID 文件
+        工作原理：创建 .monitor.stop 文件，监控循环会检测到并立即停止
         """
         logger.info("收到停止监控请求...")
         
-        # 创建停止信号文件（跨进程停止）
+        # 创建停止信号文件
         try:
             with open(self.STOP_SIGNAL_FILE, 'w') as f:
                 f.write(str(time.time()))
             logger.info("已创建停止信号文件")
         except Exception as e:
             logger.warning(f"创建停止信号文件失败: {e}")
+            return {"status": "error", "message": f"创建停止信号失败: {e}"}
         
-        # 停止当前进程内的后台线程
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            self._monitor_running = False
-            self._stop_event.set()
-            logger.info("已发送停止信号")
-        
-        # 清理 PID 文件
-        try:
-            if os.path.exists(self.MONITOR_PID_FILE):
-                os.remove(self.MONITOR_PID_FILE)
-        except Exception:
-            pass
-        
-        # 重置状态
-        self._monitor_running = False
-        self._stop_event.set()
-        
-        return {"status": "success", "message": "已发送停止信号"}
+        return {"status": "success", "message": "已发送停止信号，监控将在当前操作后停止"}
     
     def get_contact_states(self) -> Dict:
         """获取当前所有联系人的状态"""
@@ -1759,29 +1710,18 @@ if __name__ == "__main__":
     elif args.action == "check_new_messages":
         result = check_new_messages()
     elif args.action == "start_monitor":
-        result = start_monitor(
-            interval=args.interval, 
-            duration=args.duration,
-            auto_reply_message=args.auto_reply
-        )
-        # 命令行模式下，主线程需要等待监控完成（否则 daemon 线程会被杀死）
-        if result["status"] == "success":
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            print("\n监控运行中，按 Ctrl+C 停止...")
-            try:
-                # 等待监控线程结束
-                while _manager._monitor_thread and _manager._monitor_thread.is_alive():
-                    _manager._monitor_thread.join(timeout=1)
-            except KeyboardInterrupt:
-                print("\n正在停止监控...")
-                stop_monitor()
-            # 输出最终结果
-            if _manager._monitor_result:
-                result = _manager._monitor_result
-            else:
-                result = {"status": "success", "message": "监控已停止"}
+        print("启动监控，按 Ctrl+C 可停止...")
+        try:
+            result = start_monitor(
+                interval=args.interval, 
+                duration=args.duration,
+                auto_reply_message=args.auto_reply
+            )
+        except KeyboardInterrupt:
+            print("\n用户中断，停止监控...")
+            stop_monitor()
+            result = {"status": "success", "message": "用户中断监控"}
     elif args.action == "stop_monitor":
         result = stop_monitor()
     
-    if args.action != "start_monitor":
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
