@@ -1501,9 +1501,6 @@ class WeChatManager:
         self._stop_event.set()
         
         return {"status": "success", "message": "已发送停止信号"}
-            
-        except Exception as e:
-            return {"status": "error", "message": f"停止监控失败: {str(e)}"}
     
     def get_contact_states(self) -> Dict:
         """获取当前所有联系人的状态"""
