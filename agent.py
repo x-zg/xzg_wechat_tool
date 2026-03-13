@@ -1775,7 +1775,24 @@ if __name__ == "__main__":
             duration=args.duration,
             auto_reply_message=args.auto_reply
         )
+        # 命令行模式下，主线程需要等待监控完成（否则 daemon 线程会被杀死）
+        if result["status"] == "success":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print("\n监控运行中，按 Ctrl+C 停止...")
+            try:
+                # 等待监控线程结束
+                while _manager._monitor_thread and _manager._monitor_thread.is_alive():
+                    _manager._monitor_thread.join(timeout=1)
+            except KeyboardInterrupt:
+                print("\n正在停止监控...")
+                stop_monitor()
+            # 输出最终结果
+            if _manager._monitor_result:
+                result = _manager._monitor_result
+            else:
+                result = {"status": "success", "message": "监控已停止"}
     elif args.action == "stop_monitor":
         result = stop_monitor()
     
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.action != "start_monitor":
+        print(json.dumps(result, ensure_ascii=False, indent=2))
