@@ -7,6 +7,21 @@
 - 结果去重合并
 - OCR结果日志记录
 """
+import sys
+import io
+import os
+
+# ============== 强制统一编码为 UTF-8（解决 Windows 控制台编码问题）==============
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+
 import cv2
 import numpy as np
 import logging
@@ -16,7 +31,10 @@ from pathlib import Path
 from PIL import ImageGrab
 from rapidocr import RapidOCR
 
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# 配置日志输出编码为 UTF-8
+_log_handler = logging.StreamHandler(sys.stdout)
+_log_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logging.basicConfig(level=logging.WARNING, handlers=[_log_handler])
 logger = logging.getLogger(__name__)
 
 # 配置参数

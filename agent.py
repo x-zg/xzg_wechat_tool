@@ -9,10 +9,18 @@ import sys
 import io
 import os
 
-# 强制设置 stdout 编码为 UTF-8（解决 Windows 控制台编码问题）
+# ============== 强制统一编码为 UTF-8（解决 Windows 控制台编码问题）==============
 if sys.platform == 'win32':
+    # 强制 stdout/stderr 为 UTF-8
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    # 设置控制台代码页为 UTF-8
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
 
 import base64
 import time
@@ -35,7 +43,16 @@ import win32api
 import win32process
 import numpy as np
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ============== 配置日志输出编码为 UTF-8 ==============
+# 创建 StreamHandler，确保使用 UTF-8 编码
+_log_handler = logging.StreamHandler(sys.stdout)
+_log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# 配置根日志器
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[_log_handler]
+)
 logger = logging.getLogger("WeChat_Tool")
 
 
