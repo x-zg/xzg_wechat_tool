@@ -1448,8 +1448,8 @@ class WeChatManager:
                     }
                 }
         
-        # 启动后台线程
-        self._monitor_thread = threading.Thread(target=_monitor_thread_func, daemon=True)
+        # 启动后台线程（非守护模式，确保监控完成）
+        self._monitor_thread = threading.Thread(target=_monitor_thread_func, daemon=False)
         self._monitor_thread.start()
         
         return {
