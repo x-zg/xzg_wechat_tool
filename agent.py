@@ -25,7 +25,6 @@ if sys.platform == 'win32':
 import base64
 import time
 import logging
-import psutil
 from typing import Any, Dict, Optional, Tuple
 from io import BytesIO
 from pathlib import Path
@@ -59,18 +58,7 @@ logger = logging.getLogger("WeChat_Tool")
 class WeChatManager:
     """微信客户端管理器"""
     
-    # 支持多种进程名（不同版本微信进程名可能不同）
-    WECHAT_EXE_NAMES = ["WeChat.exe", "Weixin.exe"]
     WAKE_UP_HOTKEY = ('ctrl', 'alt', 'w')
-    # 微信安装路径（常见路径，按优先级排序）
-    WECHAT_PATHS = [
-        os.path.expandvars(r"%LOCALAPPDATA%\Tencent\WeChat\WeChat.exe"),
-        os.path.expandvars(r"%PROGRAMFILES%\Tencent\WeChat\WeChat.exe"),
-        os.path.expandvars(r"%PROGRAMFILES(X86)%\Tencent\WeChat\WeChat.exe"),
-        r"D:\Tencent\WeChat\WeChat.exe",
-        r"C:\Program Files\Tencent\WeChat\WeChat.exe",
-        r"C:\Program Files (x86)\Tencent\WeChat\WeChat.exe",
-    ]
 
     def __init__(self):
         self._app = None
@@ -78,57 +66,6 @@ class WeChatManager:
         self._gw_window = None  # pygetwindow 窗口
         self._contact_states = {}  # 记录每个联系人的状态 {name: {"last_message": "...", "replied": True}}
         self._monitor_running = False  # 监控是否在运行
-    
-    def _find_wechat_path(self) -> Optional[str]:
-        """查找微信安装路径"""
-        for path in self.WECHAT_PATHS:
-            if os.path.exists(path):
-                return path
-        return None
-    
-    def start_wechat(self) -> Tuple[bool, str]:
-        """启动微信
-        
-        Returns:
-            Tuple[bool, str]: (是否成功, 消息)
-        """
-        # 先检查是否已运行
-        if self.check_process():
-            return True, "微信已在运行"
-        
-        # 查找微信路径
-        wechat_path = self._find_wechat_path()
-        if not wechat_path:
-            return False, "未找到微信安装路径"
-        
-        try:
-            # 启动微信
-            import subprocess
-            subprocess.Popen([wechat_path], shell=True)
-            logger.info(f"正在启动微信: {wechat_path}")
-            
-            # 等待微信启动（最多等待 10 秒）
-            for i in range(20):
-                time.sleep(0.5)
-                if self.check_process():
-                    # 再等待窗口出现
-                    time.sleep(1)
-                    return True, "微信启动成功"
-            
-            return False, "微信启动超时"
-        except Exception as e:
-            logger.error(f"启动微信失败: {e}")
-            return False, f"启动微信失败: {e}"
-    
-    def check_process(self) -> list:
-        """检查微信进程，返回 PID 列表"""
-        try:
-            processes = [p for p in psutil.process_iter(['pid', 'name'])
-                        if any(exe.lower() in p.info['name'].lower() for exe in self.WECHAT_EXE_NAMES)]
-            return [p.info['pid'] for p in processes]
-        except Exception as e:
-            logger.error(f"检查进程失败: {e}")
-            return []
     
     def _find_gw_window(self) -> Optional[Any]:
         """使用 pygetwindow 查找微信窗口"""
@@ -203,13 +140,11 @@ class WeChatManager:
         
         return self._is_window_visible(w)
     
-    def _ensure_window_ready(self, auto_start: bool = True) -> Tuple[Optional[Any], Optional[str]]:
+    def _ensure_window_ready(self) -> Tuple[Optional[Any], Optional[str]]:
         """确保微信窗口就绪（统一的状态检查方法）
         
         所有操作方法应调用此方法来确保窗口状态正确。
-        
-        Args:
-            auto_start: 是否自动启动微信（如果未运行）
+        微信需要用户手动打开，此方法只负责检测和置顶窗口。
         
         Returns:
             Tuple[Optional[window], Optional[error_msg]]:
@@ -218,24 +153,7 @@ class WeChatManager:
         """
         logger.info("开始检查微信窗口状态...")
         
-        # 步骤1: 检查微信进程是否存在
-        pid_list = self.check_process()
-        logger.info(f"微信进程检测结果: {pid_list}")
-        
-        if not pid_list:
-            # 进程不存在
-            if auto_start:
-                logger.info("微信未运行，尝试自动启动...")
-                success, msg = self.start_wechat()
-                if not success:
-                    return None, f"微信未运行且自动启动失败: {msg}"
-                pid_list = self.check_process()
-                if not pid_list:
-                    return None, "微信启动超时"
-            else:
-                return None, "微信未运行"
-        
-        # 步骤2: 查找微信窗口（最多尝试 3 次）
+        # 步骤1: 查找微信窗口（最多尝试 3 次）
         w = None
         for attempt in range(3):
             w = self._find_gw_window()
@@ -244,7 +162,7 @@ class WeChatManager:
             logger.debug(f"未找到窗口 (尝试 {attempt + 1}/3)")
             time.sleep(0.3)
         
-        # 步骤3: 判断窗口状态并处理
+        # 步骤2: 判断窗口状态并处理
         if not w:
             # 窗口不存在（微信在托盘区），用快捷键唤醒（最多尝试 3 次）
             logger.info("窗口不存在，尝试快捷键唤醒...")
@@ -258,27 +176,27 @@ class WeChatManager:
                 logger.debug(f"快捷键唤醒未找到窗口 (尝试 {attempt + 1}/3)")
             
             if not w:
-                return None, "无法唤醒微信窗口（可能在托盘区或快捷键无效）"
+                return None, "微信未运行，请手动打开微信"
         
-        # 步骤4: 获取窗口句柄
+        # 步骤3: 获取窗口句柄
         hwnd = w._hWnd if hasattr(w, '_hWnd') else None
         if not hwnd:
             return None, "无法获取微信窗口句柄"
         
         logger.info(f"找到微信窗口: hwnd={hwnd}, title={w.title}")
         
-        # 步骤5: 检查窗口是否最小化
+        # 步骤4: 检查窗口是否最小化
         if win32gui.IsIconic(hwnd):
             logger.info("窗口已最小化，恢复窗口...")
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
             time.sleep(0.3)
         
-        # 步骤6: 激活窗口到前台（最多尝试 3 次）
+        # 步骤5: 激活窗口到前台（最多尝试 3 次）
         for attempt in range(3):
             self._bring_window_to_front(w)
             time.sleep(0.3)
             
-            # 步骤7: 验证窗口是否真的在前台
+            # 验证窗口是否真的在前台
             foreground_hwnd = win32gui.GetForegroundWindow()
             if foreground_hwnd == hwnd:
                 logger.info("窗口已成功激活到前台")
@@ -400,17 +318,15 @@ class WeChatManager:
                 logger.error(f"pygetwindow 激活也失败: {e2}")
                 return False
     
-    def get_main_window(self, force_refresh: bool = False, activate_first: bool = False, 
-                         auto_start: bool = True) -> Optional[Any]:
+    def get_main_window(self, force_refresh: bool = False, activate_first: bool = False) -> Optional[Any]:
         """获取微信主窗口（返回 pygetwindow 窗口对象）
         
         Args:
             force_refresh: 是否强制刷新窗口
             activate_first: 是否先激活窗口
-            auto_start: 微信未运行时是否自动启动
         """
         # 使用统一的窗口状态检查方法
-        w, error = self._ensure_window_ready(auto_start=auto_start)
+        w, error = self._ensure_window_ready()
         return w
     
     def get_window_rect(self) -> Optional[Dict]:
@@ -433,9 +349,9 @@ class WeChatManager:
             return None
     
     def capture(self) -> Optional[Image.Image]:
-        """截取微信窗口（使用 win32 API，支持自动启动）"""
-        # 先激活窗口（强制刷新，自动启动微信）
-        w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
+        """截取微信窗口（使用 win32 API）"""
+        # 先激活窗口
+        w = self.get_main_window(force_refresh=True, activate_first=True)
         if not w:
             logger.error("无法获取微信窗口")
             return None
@@ -554,14 +470,11 @@ class WeChatManager:
                 pass
     
     def get_status(self) -> Dict:
-        """获取微信状态（确保窗口激活，支持自动启动）"""
-        # 直接调用 get_main_window，它会自动处理启动逻辑
-        w = self.get_main_window(activate_first=True, auto_start=True)
+        """获取微信状态"""
+        # 直接调用 get_main_window
+        w = self.get_main_window(activate_first=True)
         if not w:
-            # 检查是否是微信未运行
-            if not self.check_process():
-                return {"status": "not_running", "message": "微信未运行且自动启动失败"}
-            return {"status": "not_running", "message": "未找到微信窗口"}
+            return {"status": "not_running", "message": "微信未运行，请手动打开微信"}
         
         rect = self.get_window_rect()
         
@@ -573,10 +486,10 @@ class WeChatManager:
         }
     
     def click(self, x: int, y: int) -> bool:
-        """点击指定坐标（先激活窗口，支持自动启动）"""
+        """点击指定坐标"""
         try:
-            # 先激活窗口（自动启动微信）
-            w = self.get_main_window(activate_first=True, auto_start=True)
+            # 先激活窗口
+            w = self.get_main_window(activate_first=True)
             if not w:
                 return False
             time.sleep(0.1)
@@ -589,10 +502,10 @@ class WeChatManager:
     
     def input_text(self, content: str, x: int = None, y: int = None, 
                    send_enter: bool = False) -> bool:
-        """输入文本（先激活窗口，支持自动启动）"""
+        """输入文本"""
         try:
-            # 先激活窗口（自动启动微信）
-            w = self.get_main_window(activate_first=True, auto_start=True)
+            # 先激活窗口
+            w = self.get_main_window(activate_first=True)
             if not w:
                 return False
             time.sleep(0.1)
@@ -615,7 +528,7 @@ class WeChatManager:
     
     def scroll(self, direction: str = 'down', amount: int = 300, 
                x: int = None, y: int = None) -> bool:
-        """滚动页面（先激活窗口，支持自动启动）
+        """滚动页面
         
         Args:
             direction: 滚动方向，"up" 或 "down"
@@ -624,8 +537,8 @@ class WeChatManager:
             y: 滚动位置 Y 坐标，默认窗口中心
         """
         try:
-            # 先激活窗口（自动启动微信）
-            w = self.get_main_window(activate_first=True, auto_start=True)
+            # 先激活窗口
+            w = self.get_main_window(activate_first=True)
             if not w:
                 return False
             time.sleep(0.1)
@@ -651,11 +564,11 @@ class WeChatManager:
             return False
     
     def send_message(self, message: str) -> Tuple[bool, Optional[str]]:
-        """发送消息（支持自动启动微信）"""
+        """发送消息"""
         logger.info(f"发送消息: {message}")
         
-        # 1. 确保窗口可见（自动启动微信）
-        w = self.get_main_window(activate_first=True, auto_start=True)
+        # 1. 确保窗口可见
+        w = self.get_main_window(activate_first=True)
         if not w:
             return False, "未找到微信窗口"
         
@@ -696,8 +609,8 @@ class WeChatManager:
         try:
             from OCR import ocr_endpoint
             
-            # 获取 pygetwindow 窗口（强制刷新，自动启动微信）
-            w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
+            # 获取 pygetwindow 窗口
+            w = self.get_main_window(force_refresh=True, activate_first=True)
             if not w:
                 return {"status": "error", "message": "无法获取微信窗口"}
             
@@ -708,7 +621,7 @@ class WeChatManager:
                 # 窗口失效，重新获取
                 logger.debug("OCR: 窗口失效，重新获取")
                 self._gw_window = None
-                w = self.get_main_window(force_refresh=True, activate_first=True, auto_start=True)
+                w = self.get_main_window(force_refresh=True, activate_first=True)
                 if not w:
                     return {"status": "error", "message": "无法获取微信窗口"}
             
@@ -874,6 +787,7 @@ class WeChatManager:
                 # 联系人名称通常是该组中最左边且靠上的文字
                 name_text = None
                 message_text = None
+                is_from_me = False  # 标记最后一条消息是否是我发的
                 name_y = float('inf')
                 
                 for line in group:
@@ -887,6 +801,14 @@ class WeChatManager:
                     elif len(text) > 2:
                         message_text = text
                 
+                # 判断最后一条消息是否是我发的（微信显示"我:"前缀）
+                if message_text:
+                    # 检测 "我:" 或 "我：" 前缀（中文冒号或英文冒号）
+                    if message_text.startswith("我:") or message_text.startswith("我："):
+                        is_from_me = True
+                        # 去掉前缀，保留实际消息内容
+                        message_text = message_text[2:].strip()
+                
                 # 计算点击位置（转换回屏幕坐标）
                 if group:
                     avg_y = sum(l["y"] for l in group) / len(group)
@@ -897,6 +819,7 @@ class WeChatManager:
                         "index": i,
                         "name": name_text or f"未知联系人{i+1}",
                         "last_message": message_text or "",
+                        "is_from_me": is_from_me,  # 新增：标记消息来源
                         "position": {"x": int(click_x), "y": int(click_y)},
                         "rect": {
                             "left": chat_list_left,
@@ -963,17 +886,17 @@ class WeChatManager:
             logger.error(f"点击联系人失败: {e}")
             return {"status": "error", "message": f"点击联系人失败: {str(e)}"}
     
-    def monitor_chat_changes(self, previous_state: dict = None, interval: float = 2.0) -> Dict:
+    def monitor_chat_changes(self, previous_state: dict = None, interval: float = 10.0) -> Dict:
         """监控聊天列表变化（智能判断是否需要回复）
         
         核心逻辑：
-        1. 对比消息内容变化 → 判断是否是新消息
-        2. 检查是否已回复过该消息 → 避免重复回复
-        3. 只返回真正需要回复的联系人
+        1. 只保留最后一条消息判断
+        2. 区分"我说的"和"对方说的" - 只有对方说话才回复
+        3. 消息变化 + 不是我发的 → 加入回复队列
         
         Args:
             previous_state: 上一次的状态（用于对比变化）
-            interval: 监控间隔（秒）
+            interval: 监控间隔（秒），默认10秒
         
         Returns:
             Dict: {
@@ -981,7 +904,7 @@ class WeChatManager:
                 "data": {
                     "current_state": {...},
                     "changes": [...],
-                    "need_reply_contacts": [...]  # 需要回复的联系人（排除已回复的）
+                    "need_reply_contacts": [...]  # 需要回复的联系人（对方发的消息）
                 }
             }
         """
@@ -1001,6 +924,7 @@ class WeChatManager:
                 if name not in self._contact_states:
                     self._contact_states[name] = {
                         "last_message": contact.get("last_message", ""),
+                        "is_from_me": contact.get("is_from_me", False),
                         "replied": True  # 首次见到，标记为已回复（不自动回复历史消息）
                     }
                     logger.info(f"  初始化联系人状态: {name} -> 已知消息，标记为已回复")
@@ -1009,34 +933,46 @@ class WeChatManager:
             for i, contact in enumerate(current_contacts):
                 name = contact["name"]
                 current_message = contact.get("last_message", "")
+                current_is_from_me = contact.get("is_from_me", False)
                 saved_state = self._contact_states.get(name, {})
                 saved_message = saved_state.get("last_message", "")
+                saved_is_from_me = saved_state.get("is_from_me", False)
                 already_replied = saved_state.get("replied", False)
                 
                 # 检测消息是否变化
-                if current_message != saved_message:
-                    changes.append({
-                        "type": "new_message",
-                        "contact": name,
-                        "details": f"新消息: {current_message}",
-                        "old_message": saved_message
-                    })
-                    
+                if current_message != saved_message or current_is_from_me != saved_is_from_me:
                     # 更新保存的消息
                     self._contact_states[name]["last_message"] = current_message
-                    self._contact_states[name]["replied"] = False  # 新消息，标记为未回复
+                    self._contact_states[name]["is_from_me"] = current_is_from_me
                     
-                    # 需要回复
-                    need_reply_contacts.append({
-                        "name": name,
-                        "message": current_message,
-                        "position": contact.get("position")
-                    })
+                    # 只有对方发的新消息才需要回复（不是我发的）
+                    if not current_is_from_me:
+                        changes.append({
+                            "type": "new_message_from_other",
+                            "contact": name,
+                            "details": f"对方发来新消息: {current_message}",
+                            "old_message": saved_message
+                        })
+                        self._contact_states[name]["replied"] = False  # 标记为未回复
+                        need_reply_contacts.append({
+                            "name": name,
+                            "message": current_message,
+                            "position": contact.get("position")
+                        })
+                        logger.info(f"  📩 {name} 对方发来新消息: {current_message}")
+                    else:
+                        # 是我发的消息，标记为已回复
+                        self._contact_states[name]["replied"] = True
+                        changes.append({
+                            "type": "new_message_from_me",
+                            "contact": name,
+                            "details": f"我发送了消息: {current_message}",
+                            "old_message": saved_message
+                        })
+                        logger.info(f"  📤 {name} 我发送了消息: {current_message}")
                     
-                    logger.info(f"  检测到 {name} 有新消息: {current_message}")
-                    
-                elif not already_replied:
-                    # 消息没变，但之前标记为未回复（可能上次回复失败）
+                elif not already_replied and not current_is_from_me:
+                    # 消息没变，但之前标记为未回复且不是我的消息
                     need_reply_contacts.append({
                         "name": name,
                         "message": current_message,
@@ -1092,20 +1028,19 @@ class WeChatManager:
             logger.error(f"自动回复失败: {e}")
             return {"status": "error", "message": f"自动回复失败: {str(e)}"}
     
-    def start_chat_monitor(self, reply_handler: callable = None, interval: float = 3.0, 
+    def start_chat_monitor(self, reply_handler: callable = None, interval: float = 10.0, 
                            max_loops: int = 100, auto_reply_message: str = None) -> Dict:
         """启动聊天监控（阻塞式，智能回复）
         
         智能回复逻辑：
         1. 首次运行：记录所有联系人的当前消息，标记为已回复（不回复历史消息）
-        2. 定时检测：只对比消息内容变化
-        3. 消息变化 → 标记为未回复，加入回复队列
+        2. 定时检测：每10秒检查一次消息变化
+        3. 区分消息来源：只有对方发的消息才回复（不是我发的）
         4. 回复成功 → 标记为已回复
-        5. 消息未变化 + 已回复 → 跳过（避免重复回复）
         
         Args:
             reply_handler: 自定义回复处理函数 (contact_name, last_message) -> reply_message
-            interval: 检查间隔（秒）
+            interval: 检查间隔（秒），默认10秒
             max_loops: 最大循环次数
             auto_reply_message: 自动回复的消息内容（如果不使用 reply_handler）
         
@@ -1290,8 +1225,8 @@ def auto_reply(contact_name, message):
     """自动回复联系人"""
     return _manager.auto_reply_to_contact(contact_name=contact_name, message=message)
 
-def start_monitor(interval=3.0, max_loops=100, auto_reply_message=None):
-    """启动聊天监控"""
+def start_monitor(interval=10.0, max_loops=100, auto_reply_message=None):
+    """启动聊天监控（默认10秒间隔）"""
     return _manager.start_chat_monitor(
         interval=interval, 
         max_loops=max_loops, 
