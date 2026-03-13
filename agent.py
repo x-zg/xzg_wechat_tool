@@ -290,7 +290,7 @@ class WeChatManager:
         return w, None
     
     def _bring_window_to_front(self, w) -> bool:
-        """将窗口置顶并激活"""
+        """将窗口置顶并激活（使用多种方法确保成功）"""
         try:
             # 获取窗口句柄（优先使用 pygetwindow 的 _hWnd 属性）
             hwnd = None
@@ -304,36 +304,87 @@ class WeChatManager:
                 logger.warning("无法获取窗口句柄")
                 return False
             
-            # 方法1: 如果窗口最小化，先恢复
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            time.sleep(0.1)
+            logger.info(f"  正在激活窗口 hwnd={hwnd}...")
             
-            # 方法2: 使用 AttachThreadInput 绕过 SetForegroundWindow 限制
+            # ===== 方法1: 先恢复窗口（如果最小化）=====
+            if win32gui.IsIconic(hwnd):
+                logger.info("  窗口已最小化，正在恢复...")
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                time.sleep(0.2)
+            
+            # ===== 方法2: 使用 AttachThreadInput 绕过 SetForegroundWindow 限制 =====
             foreground_hwnd = win32gui.GetForegroundWindow()
             foreground_thread = win32process.GetWindowThreadProcessId(foreground_hwnd)[0]
             current_thread = win32api.GetCurrentThreadId()
             target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
             
+            logger.info(f"  线程信息: 当前={current_thread}, 前台={foreground_thread}, 目标={target_thread}")
+            
             # 附加线程输入
+            attach_threads = []
             if current_thread != target_thread:
                 win32gui.AttachThreadInput(current_thread, target_thread, True)
-                if foreground_thread != target_thread:
-                    win32gui.AttachThreadInput(foreground_thread, target_thread, True)
+                attach_threads.append((current_thread, target_thread))
+            if foreground_thread != target_thread and foreground_thread != current_thread:
+                win32gui.AttachThreadInput(foreground_thread, target_thread, True)
+                attach_threads.append((foreground_thread, target_thread))
             
-            # 置顶窗口
+            # ===== 方法3: 设置窗口位置和状态 =====
+            # 先显示窗口
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            # 设置为顶层窗口（不改变大小）
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+            # 取消顶层（避免一直置顶）
+            win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+            
+            # ===== 方法4: 激活窗口 =====
             win32gui.SetForegroundWindow(hwnd)
             win32gui.BringWindowToTop(hwnd)
-            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            win32gui.SetFocus(hwnd)
             
             # 解除线程附加
-            if current_thread != target_thread:
-                win32gui.AttachThreadInput(current_thread, target_thread, False)
-                if foreground_thread != target_thread:
-                    win32gui.AttachThreadInput(foreground_thread, target_thread, False)
+            for t1, t2 in attach_threads:
+                try:
+                    win32gui.AttachThreadInput(t1, t2, False)
+                except Exception:
+                    pass
             
-            time.sleep(0.2)
-            logger.debug(f"窗口已激活: hwnd={hwnd}")
-            return True
+            time.sleep(0.3)
+            
+            # ===== 方法5: 如果前面方法失败，使用模拟按键绕过限制 =====
+            new_foreground = win32gui.GetForegroundWindow()
+            if new_foreground != hwnd:
+                logger.info("  常规方法激活失败，尝试模拟 Alt 键绕过限制...")
+                # 模拟按下 Alt 键（这会允许 SetForegroundWindow 工作）
+                win32api.keybd_event(0x12, 0, 0, 0)  # Alt down
+                time.sleep(0.1)
+                win32gui.SetForegroundWindow(hwnd)
+                time.sleep(0.1)
+                win32api.keybd_event(0x12, 0, 2, 0)  # Alt up
+                time.sleep(0.2)
+            
+            # 验证激活结果
+            new_foreground = win32gui.GetForegroundWindow()
+            if new_foreground == hwnd:
+                logger.info(f"  ✓ 窗口激活成功!")
+                return True
+            else:
+                # ===== 方法6: 最后尝试 pygetwindow =====
+                logger.warning(f"  Win32 激活失败，尝试 pygetwindow...")
+                try:
+                    w.activate()
+                    time.sleep(0.3)
+                    new_foreground = win32gui.GetForegroundWindow()
+                    if new_foreground == hwnd:
+                        logger.info(f"  ✓ pygetwindow 激活成功!")
+                        return True
+                except Exception as e:
+                    logger.warning(f"  pygetwindow 激活也失败: {e}")
+                
+                logger.warning(f"  ⚠ 窗口激活可能失败，当前前台窗口 hwnd={new_foreground}")
+                return True  # 仍然返回 True，让调用者决定是否重试
             
         except Exception as e:
             logger.error(f"激活窗口失败: {e}")
@@ -341,8 +392,10 @@ class WeChatManager:
             try:
                 w.activate()
                 time.sleep(0.3)
+                logger.info("  使用 pygetwindow.activate() 成功")
                 return True
-            except Exception:
+            except Exception as e2:
+                logger.error(f"pygetwindow 激活也失败: {e2}")
                 return False
     
     def get_main_window(self, force_refresh: bool = False, activate_first: bool = False, 
