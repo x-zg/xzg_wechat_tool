@@ -75,6 +75,26 @@ class WeChatManager:
     MONITOR_PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".monitor.pid")
     # 停止信号文件（用于跨进程停止监控，避免权限问题）
     STOP_SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".monitor.stop")
+    # 步进式监控控制文件（内容为 "running" 或 "stop"）
+    STEP_CONTROL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".step_control.cfg")
+    
+    def _read_step_control(self) -> str:
+        """读取步进式监控控制文件"""
+        try:
+            if os.path.exists(self.STEP_CONTROL_FILE):
+                with open(self.STEP_CONTROL_FILE, 'r') as f:
+                    return f.read().strip()
+        except Exception:
+            pass
+        return "stop"  # 默认停止
+    
+    def _write_step_control(self, status: str):
+        """写入步进式监控控制文件"""
+        try:
+            with open(self.STEP_CONTROL_FILE, 'w') as f:
+                f.write(status)
+        except Exception as e:
+            logger.warning(f"写入控制文件失败: {e}")
 
     def __init__(self):
         self._app = None
@@ -1762,7 +1782,7 @@ root.mainloop()
         工作方式：
         1. 启动后台线程自动检测
         2. 调用 step_check() 查询当前状态（立即返回，不阻塞）
-        3. 调用 stop_step_monitor() 停止
+        3. 调用 stop_step_monitor() 停止，或修改 .step_control.cfg 文件为 "stop"
         
         Args:
             interval: 检测间隔（秒），默认5秒
@@ -1792,7 +1812,10 @@ root.mainloop()
         self._step_stats = {"checks": 0, "replies_sent": 0}
         self._step_last_result = None  # 最近一次检测结果
         
-        # 清除停止信号文件
+        # 写入控制文件：运行中
+        self._write_step_control("running")
+        
+        # 清除旧的停止信号文件
         try:
             if os.path.exists(self.STOP_SIGNAL_FILE):
                 os.remove(self.STOP_SIGNAL_FILE)
@@ -1802,8 +1825,10 @@ root.mainloop()
         # 启动后台检测线程
         def _step_monitor_thread():
             while self._monitor_running:
-                # 检查停止信号
-                if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                # 检查控制文件
+                control = self._read_step_control()
+                if control == "stop":
+                    logger.info("检测到停止信号（控制文件）")
                     break
                 
                 # 检查超时
@@ -1862,15 +1887,16 @@ root.mainloop()
                         }
                     }
                 
-                # 等待下一次检测（分段检查停止信号）
+                # 等待下一次检测（分段检查控制文件）
                 wait_loops = int(self._step_interval * 10)
                 for _ in range(wait_loops):
-                    if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                    if self._read_step_control() == "stop":
                         break
                     time.sleep(0.1)
             
             # 线程结束
             self._monitor_running = False
+            self._write_step_control("stop")
             logger.info("步进式监控线程已结束")
         
         self._monitor_thread = threading.Thread(target=_step_monitor_thread, daemon=True)
@@ -1882,7 +1908,8 @@ root.mainloop()
             "data": {
                 "interval": interval,
                 "timeout": timeout,
-                "monitor_running": True
+                "monitor_running": True,
+                "control_file": self.STEP_CONTROL_FILE
             }
         }
     
@@ -1896,6 +1923,10 @@ root.mainloop()
                 "data": {...}
             }
         """
+        # 检查控制文件
+        if self._read_step_control() == "stop":
+            self._monitor_running = False
+        
         if not self._monitor_running and not hasattr(self, '_step_last_result'):
             return {
                 "status": "error",
@@ -1957,37 +1988,34 @@ root.mainloop()
         return result
     
     def stop_step_monitor(self) -> Dict:
-        """停止步进式监控（立即返回）
+        """停止步进式监控（通过写入控制文件，立即返回）
         
         Returns:
             Dict: {"status": "success", "data": {"stats": {...}}}
         """
         logger.info("停止步进式监控...")
         
+        # 写入控制文件：停止
+        self._write_step_control("stop")
+        
         # 设置停止标志
         self._monitor_running = False
         self._stop_event.set()
-        
-        # 创建停止信号文件
-        try:
-            with open(self.STOP_SIGNAL_FILE, 'w') as f:
-                f.write(str(time.time()))
-        except Exception:
-            pass
         
         elapsed = time.time() - getattr(self, '_step_start_time', time.time())
         stats = getattr(self, '_step_stats', {"checks": 0, "replies_sent": 0})
         
         return {
             "status": "success",
-            "message": "监控已停止",
+            "message": "监控已停止（已写入控制文件）",
             "data": {
                 "stats": {
                     "checks": stats.get("checks", 0),
                     "replies_sent": stats.get("replies_sent", 0),
                     "elapsed_time": round(elapsed, 1)
                 },
-                "pending_messages_count": len(self._new_messages_queue)
+                "pending_messages_count": len(self._new_messages_queue),
+                "control_file": self.STEP_CONTROL_FILE
             }
         }
     
