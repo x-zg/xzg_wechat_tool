@@ -82,6 +82,7 @@ class WeChatManager:
         self._monitor_running = False  # 监控是否在运行
         self._monitor_thread = None  # 监控线程
         self._monitor_result = None  # 监控结果
+        self._stop_event = threading.Event()  # 用于立即停止监控的事件
     
     def _flash_capture_area(self, left: int, top: int, right: int, bottom: int, duration: float = 0.5):
         """在截图区域显示闪烁效果
@@ -425,8 +426,15 @@ class WeChatManager:
             logger.error(f"获取窗口位置失败: {e}")
             return None
     
-    def capture(self) -> Optional[Image.Image]:
-        """截取微信窗口（使用 win32 API）"""
+    def capture(self, show_flash: bool = None) -> Optional[Image.Image]:
+        """截取微信窗口（使用 win32 API）
+        
+        Args:
+            show_flash: 是否显示截图闪烁提示，None 时使用全局设置 FLASH_CAPTURE_ENABLED
+        """
+        # 确定是否显示闪烁（参数优先于全局设置）
+        should_flash = FLASH_CAPTURE_ENABLED if show_flash is None else show_flash
+        
         # 先激活窗口
         w = self.get_main_window(force_refresh=True, activate_first=True)
         if not w:
@@ -471,7 +479,7 @@ class WeChatManager:
                 return None
             
             # 如果启用了闪烁提示，显示截图区域
-            if FLASH_CAPTURE_ENABLED:
+            if should_flash:
                 self._flash_capture_area(left, top, right, bottom, FLASH_DURATION)
             
             # 优先使用 win32 API 截图（即使窗口被遮挡也能正确截图）
@@ -830,13 +838,14 @@ class WeChatManager:
     
     # ==================== 聊天列表监控功能 ====================
     
-    def get_chat_list(self, count: int = 5) -> Dict:
+    def get_chat_list(self, count: int = 5, show_flash: bool = False) -> Dict:
         """获取左侧聊天列表的前N个联系人
         
         通过 OCR 识别左侧聊天列表区域，提取联系人信息。
         
         Args:
             count: 获取的联系人数量（默认5个）
+            show_flash: 是否显示截图闪烁提示（默认关闭，避免阻塞后台线程）
         
         Returns:
             Dict: {
@@ -871,7 +880,7 @@ class WeChatManager:
             
             # 截取聊天列表区域
             logger.info("正在截图...")
-            img = self.capture()
+            img = self.capture(show_flash=show_flash)
             if not img:
                 logger.error("截图失败")
                 return {"status": "error", "message": "截图失败"}
@@ -1390,6 +1399,7 @@ class WeChatManager:
         # 重置状态
         self._monitor_running = True
         self._monitor_result = None
+        self._stop_event.clear()  # 清除停止事件
         
         # 定义监控线程函数
         def _monitor_thread_func():
@@ -1412,7 +1422,7 @@ class WeChatManager:
             try:
                 for loop in range(max_loops):
                     # 检查是否被停止
-                    if not self._monitor_running:
+                    if not self._monitor_running or self._stop_event.is_set():
                         logger.info("监控已停止")
                         break
                     
@@ -1430,7 +1440,10 @@ class WeChatManager:
                     monitor_result = self.monitor_chat_changes()
                     if monitor_result["status"] != "success":
                         logger.warning(f"监控检查失败: {monitor_result['message']}")
-                        time.sleep(interval)
+                        # 使用 Event.wait 替代 sleep，可被中断
+                        if self._stop_event.wait(interval):
+                            logger.info("监控被停止信号中断")
+                            break
                         continue
                     
                     logger.info(f"监控检查成功: has_changes={monitor_result['data']['has_changes']}")
@@ -1450,7 +1463,7 @@ class WeChatManager:
                         
                         for contact in need_reply:
                             # 检查是否被停止
-                            if not self._monitor_running:
+                            if not self._monitor_running or self._stop_event.is_set():
                                 break
                                 
                             contact_name = contact["name"]
@@ -1474,13 +1487,19 @@ class WeChatManager:
                                 else:
                                     logger.warning(f"  ❌ 回复失败: {reply_result['message']}")
                                 
-                                time.sleep(1)  # 回复间隔
+                                # 回复间隔（可中断）
+                                if self._stop_event.wait(1):
+                                    logger.info("监控被停止信号中断")
+                                    break
                     else:
                         if not need_reply:
                             logger.info("  无需回复的联系人")
                     
                     stats["contacts_monitored"] = len(self._contact_states)
-                    time.sleep(interval)
+                    # 使用 Event.wait 替代 sleep，可被中断
+                    if self._stop_event.wait(interval):
+                        logger.info("监控被停止信号中断")
+                        break
                 
             except Exception as e:
                 logger.error(f"监控线程异常: {e}")
@@ -1637,6 +1656,7 @@ class WeChatManager:
         if self._monitor_thread and self._monitor_thread.is_alive():
             logger.info("正在停止后台监控线程...")
             self._monitor_running = False
+            self._stop_event.set()  # 发送停止信号，立即中断 Event.wait()
             # 等待线程结束（最多等待3秒）
             self._monitor_thread.join(timeout=3)
             if self._monitor_thread.is_alive():
@@ -1650,6 +1670,7 @@ class WeChatManager:
             logger.info("未找到监控 PID 文件，可能没有监控在运行")
             # 重置状态
             self._monitor_running = False
+            self._stop_event.set()  # 确保停止信号已设置
             return {"status": "success", "message": "当前没有监控在运行"}
         
         try:
@@ -1662,6 +1683,7 @@ class WeChatManager:
             # 如果是当前进程，直接停止
             if pid == os.getpid():
                 self._monitor_running = False
+                self._stop_event.set()  # 发送停止信号
                 os.remove(self.MONITOR_PID_FILE)
                 return {"status": "success", "message": "已停止监控"}
             
