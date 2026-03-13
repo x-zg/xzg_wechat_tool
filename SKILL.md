@@ -630,18 +630,67 @@ python {baseDir}/agent.py check_new_messages
 ```
 
 **用途：**
-- 用于"检测+自定义回复"模式，让模型根据消息内容自己决定回复什么
+- 用于"检测+智能回复"模式，让模型根据消息内容自己决定回复什么
 - 模型可以循环调用此方法检查新消息，然后调用 `auto_reply` 发送自定义回复
 
-**自定义回复流程示例：**
+**⚠️ 重要：消息类型判断与处理规则**
+
+当检测到新消息时，模型必须首先判断消息类型：
+
+| 消息类型 | 示例 | 处理方式 |
+|----------|------|----------|
+| **命令型** | "帮我查下天气"、"翻译一下hello"、"搜索xxx" | **直接执行命令**，把结果回复给对方，**不要再问用户** |
+| **任务型** | "帮我订个闹钟"、"发送xxx给xxx" | **直接执行任务**，执行结果回复给对方，**不要再问用户** |
+| **咨询型** | "今天吃什么"、"你推荐什么电影" | 模型可以直接回答或提出建议 |
+| **聊天型** | "你好"、"在干嘛"、"晚安" | 模型自由发挥回复 |
+
+**命令型消息处理流程（关键！）：**
+```
+检测到: "帮我查下天气"
+    │
+    ▼
+模型判断: 这是命令型消息
+    │
+    ▼
+模型执行: 调用查天气工具/API（使用模型自己的能力）
+    │
+    ▼
+模型回复: auto_reply --name "张三" --message "北京今天晴天，气温15-25℃，适合出门"
+    │
+    ▼
+完成 ✓ （全程无需询问用户）
+```
+
+**错误示例 ❌：**
+```
+检测到: "帮我查下天气"
+    │
+    ▼
+模型询问用户: "张三想查天气，你需要我怎么回复？"
+```
+↑ 这是错误的！命令型消息应直接执行，不要问用户！
+
+**正确示例 ✓：**
+```
+检测到: "帮我查下天气"
+    │
+    ▼
+模型直接执行查天气 → 获取结果 → auto_reply回复天气信息
+```
+
+**智能回复流程示例：**
 ```
 用户: "帮我监控微信消息，智能回复"
 
 模型执行:
 1. check_new_messages → 检查新消息
 2. 如果 has_new_messages=true:
-   - 根据消息内容生成智能回复
-   - 调用 auto_reply --name "张三" --message "好的，我知道了"
+   a. 判断消息类型:
+      - "帮我查天气" → 执行查天气命令 → 回复结果
+      - "翻译hello" → 执行翻译 → 回复结果  
+      - "今天吃什么" → 模型直接建议
+      - "你好" → 模型自由回复
+   b. 调用 auto_reply --name "张三" --message "回复内容"
 3. 等待几秒后，重复步骤1
 ```
 
@@ -653,21 +702,32 @@ python {baseDir}/agent.py check_new_messages
 
 **调用：**
 ```bash
-# 只监控，不自动回复
-python {baseDir}/agent.py start_monitor --interval 10 --max_loops 6 --timeout 60
+# 基本用法：监控 60 秒，每 10 秒检查一次
+python {baseDir}/agent.py start_monitor
+
+# 监控 5 分钟，每 10 秒检查一次
+python {baseDir}/agent.py start_monitor --duration 300
+
+# 监控 2 分钟，每 5 秒检查一次
+python {baseDir}/agent.py start_monitor --duration 120 --interval 5
 
 # 监控并自动回复固定内容
-python {baseDir}/agent.py start_monitor --interval 10 --max_loops 6 --timeout 60 --auto_reply "好的，稍后回复你"
+python {baseDir}/agent.py start_monitor --duration 300 --auto_reply "好的，稍后回复你"
 ```
 
 **参数说明：**
 
 | 参数名 | 类型 | 必需 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| --interval | float | 否 | **10.0** | 检查间隔（秒），默认10秒 |
-| --max_loops | int | 否 | **6** | 最大循环次数，默认6次（约1分钟） |
-| --timeout | int | 否 | **60** | 超时时间（秒），超过后自动停止 |
+| --interval | float | 否 | **10.0** | 检查间隔（秒），每多久检查一次消息 |
+| --duration | int | 否 | **60** | 监控时长（秒），超过后自动停止 |
 | --auto_reply | string | 否 | 无 | 自动回复内容（不传则只监控不回复） |
+
+**常用时长对照：**
+- 1 分钟 = 60 秒
+- 3 分钟 = 180 秒
+- 5 分钟 = 300 秒
+- 10 分钟 = 600 秒
 
 **智能回复逻辑：**
 1. 首次运行：记录所有联系人的当前消息，标记为已回复（不回复历史消息）
@@ -675,11 +735,25 @@ python {baseDir}/agent.py start_monitor --interval 10 --max_loops 6 --timeout 60
 3. **区分消息来源**：只有对方发的消息才回复
    - `is_from_me=false` → 对方发的消息 → 需要回复
    - `is_from_me=true` → 我发的消息 → 不回复
-4. 回复成功 → 标记为已回复，避免重复回复
+4. **判断消息类型并处理**（同 `check_new_messages` 规则）：
+   - 命令型消息（"帮我查天气"等）→ 直接执行命令并回复结果
+   - 其他类型消息 → 根据 `--auto_reply` 参数回复或模型智能回复
+5. 回复成功 → 标记为已回复，避免重复回复
+
+**⚠️ 命令型消息自动执行（重要！）：**
+
+当对方发送命令型消息时，模型应**直接执行命令**，把结果回复给对方：
+
+| 对方消息 | 模型行为 | 回复示例 |
+|----------|----------|----------|
+| "帮我查下天气" | 调用天气API查询 | "北京今天晴天，15-25℃" |
+| "翻译hello world" | 执行翻译 | "hello world 翻译为：你好世界" |
+| "帮我搜索Python教程" | 执行搜索 | "找到以下教程：..." |
 
 **工作原理：**
 ```
 聊天列表显示 "我: 好的" → is_from_me=true → 跳过，不回复
+聊天列表显示 "帮我查天气" → is_from_me=false → 执行查天气 → 回复结果
 聊天列表显示 "明天见" → is_from_me=false → 加入回复队列
 ```
 
@@ -1315,7 +1389,7 @@ pip install pyautogui pygetwindow Pillow pyperclip rapidocr-onnxruntime numpy py
 | **click_contact** | 点击联系人 | 无 | --name, --x, --y |
 | **auto_reply** | 自动回复联系人 | --name, --message | 无 |
 | **check_new_messages** | 检查新消息 | 无 | 无 |
-| **start_monitor** | 启动聊天监控 | 无 | --interval, --max_loops, --timeout, --auto_reply |
+| **start_monitor** | 启动聊天监控 | 无 | --interval, --duration, --auto_reply |
 | **stop_monitor** | 停止聊天监控 | 无 | 无 |
 
 ---

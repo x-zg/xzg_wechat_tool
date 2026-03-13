@@ -1533,12 +1533,14 @@ def check_new_messages():
     """检查是否有新消息（供模型自定义回复使用）"""
     return _manager.check_new_messages()
 
-def start_monitor(interval=10.0, max_loops=6, timeout=60, auto_reply_message=None):
-    """启动聊天监控（默认10秒间隔，6次循环，60秒超时）"""
+def start_monitor(interval=10.0, duration=60, auto_reply_message=None):
+    """启动聊天监控（默认10秒间隔，60秒时长）"""
+    # 根据 duration 计算 max_loops
+    max_loops = int(duration / interval) + 1
     return _manager.start_chat_monitor(
         interval=interval, 
         max_loops=max_loops, 
-        timeout=timeout,
+        timeout=duration,
         auto_reply_message=auto_reply_message
     )
 
@@ -1616,9 +1618,8 @@ if __name__ == "__main__":
     
     # start_monitor
     p_monitor = subparsers.add_parser("start_monitor", help="启动聊天监控")
-    p_monitor.add_argument("--interval", type=float, default=10.0, help="检查间隔(秒)")
-    p_monitor.add_argument("--max_loops", type=int, default=6, help="最大循环次数(默认6次,约1分钟)")
-    p_monitor.add_argument("--timeout", type=int, default=60, help="超时时间(秒),超过后自动停止")
+    p_monitor.add_argument("--interval", type=float, default=10.0, help="检查间隔(秒), 默认10秒")
+    p_monitor.add_argument("--duration", type=int, default=60, help="监控时长(秒), 默认60秒")
     p_monitor.add_argument("--auto_reply", type=str, default=None, help="自动回复内容")
     
     # stop_monitor
@@ -1666,8 +1667,7 @@ if __name__ == "__main__":
     elif args.action == "start_monitor":
         result = start_monitor(
             interval=args.interval, 
-            max_loops=args.max_loops, 
-            timeout=args.timeout,
+            duration=args.duration,
             auto_reply_message=args.auto_reply
         )
     elif args.action == "stop_monitor":
