@@ -957,22 +957,21 @@ class WeChatManager:
                 if not group:
                     continue
                 
-                # 联系人名称通常是该组中最左边且靠上的文字
+                # 按 Y 坐标排序（上面的先处理）
+                group.sort(key=lambda l: l["y"])
+                
+                # 微信聊天列表布局：每组第一个是名称，后面是消息
+                # 例如：['小许', '天气'] -> 名称='小许', 消息='天气'
                 name_text = None
                 message_text = None
-                is_from_me = False  # 标记最后一条消息是否是我发的
-                name_y = float('inf')
+                is_from_me = False
                 
-                for line in group:
-                    text = line["text"].strip()
-                    # 名称通常在左侧，消息在右侧或下方
-                    if line["x"] < 80 and line["y"] < name_y:
-                        # 可能是名称
-                        if not name_text or line["y"] < name_y:
-                            name_text = text
-                            name_y = line["y"]
-                    elif len(text) > 2:
-                        message_text = text
+                # 第一个（Y 坐标最小）是名称
+                name_text = group[0]["text"].strip()
+                
+                # 其余的是消息，取最后一个作为最新消息
+                if len(group) > 1:
+                    message_text = group[-1]["text"].strip()
                 
                 # 判断最后一条消息是否是我发的（微信显示"我:"前缀）
                 if message_text:
