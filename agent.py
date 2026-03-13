@@ -1378,6 +1378,15 @@ class WeChatManager:
             logger.info(f"自动回复内容: {auto_reply_message}")
         logger.info("=" * 50)
         
+        # ===== 重要：在主线程中先确保微信窗口已就绪 =====
+        # Windows 限制后台线程操作前台窗口，所以必须在主线程中先激活窗口
+        logger.info("预激活微信窗口（主线程）...")
+        w, error = self._ensure_window_ready()
+        if error:
+            logger.error(f"无法激活微信窗口: {error}")
+            return {"status": "error", "message": error}
+        logger.info(f"微信窗口已就绪: {w.title}")
+        
         # 重置状态
         self._monitor_running = True
         self._monitor_result = None
