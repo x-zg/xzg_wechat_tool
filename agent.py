@@ -27,6 +27,7 @@ import time
 import logging
 import signal
 import psutil  # 用于跨进程管理
+import threading
 from typing import Any, Dict, Optional, Tuple
 from io import BytesIO
 from pathlib import Path
@@ -47,6 +48,10 @@ import ctypes
 
 # 获取 user32 API
 user32 = ctypes.windll.user32
+
+# 全局变量：是否显示截图闪烁
+FLASH_CAPTURE_ENABLED = False
+FLASH_DURATION = 0.5  # 闪烁持续时间（秒）
 
 # ============== 配置日志输出编码为 UTF-8 ==============
 # 创建 StreamHandler，确保使用 UTF-8 编码
@@ -75,6 +80,59 @@ class WeChatManager:
         self._gw_window = None  # pygetwindow 窗口
         self._contact_states = {}  # 记录每个联系人的状态 {name: {"last_message": "...", "replied": True}}
         self._monitor_running = False  # 监控是否在运行
+    
+    def _flash_capture_area(self, left: int, top: int, right: int, bottom: int, duration: float = 0.5):
+        """在截图区域显示闪烁效果
+        
+        使用 tkinter 创建一个半透明窗口，显示在截图区域，持续指定时间后消失。
+        
+        Args:
+            left, top, right, bottom: 截图区域的屏幕坐标
+            duration: 闪烁持续时间（秒），默认0.5秒
+        """
+        import tkinter as tk
+        
+        def show_flash():
+            try:
+                root = tk.Tk()
+                root.overrideredirect(True)  # 无边框
+                root.attributes('-topmost', True)  # 置顶
+                root.attributes('-alpha', 0.3)  # 半透明
+                
+                width = right - left
+                height = bottom - top
+                
+                # 设置窗口位置和大小
+                root.geometry(f"{width}x{height}+{left}+{top}")
+                
+                # 设置背景色为亮绿色（醒目）
+                root.configure(bg='#00FF00')
+                
+                # 添加边框效果
+                canvas = tk.Canvas(root, width=width, height=height, bg='#00FF00', highlightthickness=0)
+                canvas.pack(fill=tk.BOTH, expand=True)
+                
+                # 绘制边框
+                border_width = 3
+                canvas.create_rectangle(border_width, border_width, width-border_width, height-border_width, 
+                                       outline='#FF0000', width=border_width)
+                
+                # 在中心显示文字
+                canvas.create_text(width//2, height//2, text="📸 截图中...", 
+                                  font=('Arial', 16, 'bold'), fill='#000000')
+                
+                # 设置定时关闭
+                root.after(int(duration * 1000), root.destroy)
+                
+                root.mainloop()
+            except Exception as e:
+                logger.debug(f"闪烁显示失败: {e}")
+        
+        # 在新线程中显示闪烁，避免阻塞主线程
+        flash_thread = threading.Thread(target=show_flash, daemon=True)
+        flash_thread.start()
+        # 等待闪烁完成
+        time.sleep(duration + 0.1)
     
     def _find_gw_window(self) -> Optional[Any]:
         """使用 pygetwindow 查找微信窗口"""
@@ -413,6 +471,10 @@ class WeChatManager:
             if width < 100 or height < 100:
                 logger.error(f"微信窗口尺寸异常: {width}x{height}")
                 return None
+            
+            # 如果启用了闪烁提示，显示截图区域
+            if FLASH_CAPTURE_ENABLED:
+                self._flash_capture_area(left, top, right, bottom, FLASH_DURATION)
             
             # 优先使用 win32 API 截图（即使窗口被遮挡也能正确截图）
             img = self._capture_window_hwnd(hwnd)
@@ -1561,6 +1623,7 @@ if __name__ == "__main__":
     # screenshot
     p_screenshot = subparsers.add_parser("screenshot", help="截图")
     p_screenshot.add_argument("--save_path", type=str, default=None, help="保存路径")
+    p_screenshot.add_argument("--flash", action="store_true", help="截图时显示闪烁提示")
     
     # get_wechat_status
     subparsers.add_parser("get_wechat_status", help="获取微信状态")
@@ -1634,6 +1697,9 @@ if __name__ == "__main__":
     result = {"status": "error", "message": "未知操作"}
     
     if args.action == "screenshot":
+        # 设置闪烁提示
+        global FLASH_CAPTURE_ENABLED
+        FLASH_CAPTURE_ENABLED = getattr(args, 'flash', False)
         result = screenshot(args.save_path)
     elif args.action == "get_ocr_result":
         result = get_ocr_result()

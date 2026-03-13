@@ -65,6 +65,7 @@ python {baseDir}/agent.py screenshot
 | 参数名 | 类型 | 必需 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | --save_path | string | 否 | 无 | 保存路径。不传则返回 base64 编码 |
+| --flash | flag | 否 | false | 截图时显示闪烁提示（绿色半透明框，持续0.5秒） |
 
 **示例：**
 
@@ -77,6 +78,12 @@ python {baseDir}/agent.py screenshot --save_path D:/screenshots/wechat.png
 ```bash
 python {baseDir}/agent.py screenshot
 ```
+
+**带闪烁提示截图：**
+```bash
+python {baseDir}/agent.py screenshot --flash
+```
+截图时会在屏幕上显示一个绿色半透明框，持续0.5秒，方便确认截图区域。
 
 **返回值：**
 
@@ -1376,7 +1383,7 @@ pip install pyautogui pygetwindow Pillow pyperclip rapidocr-onnxruntime numpy py
 
 | 动作 | 说明 | 必需参数 | 可选参数 |
 |------|------|----------|----------|
-| screenshot | 截图 | 无 | --save_path |
+| screenshot | 截图 | 无 | --save_path, --flash |
 | get_wechat_status | 获取微信状态 | 无 | 无 |
 | get_ocr_result | OCR 识别 | 无 | 无 |
 | click_coordinate | 点击坐标 | --x, --y | 无 |
