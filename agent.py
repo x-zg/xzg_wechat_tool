@@ -1147,6 +1147,9 @@ class WeChatManager:
             current_contacts = current_result["data"]["contacts"]
             new_messages = []
 
+            # 检查每个联系人是否有新消息
+            has_changes = False
+
             # 初始化所有联系人的状态（首次运行）
             for contact in current_contacts:
                 name = contact["name"]
@@ -1156,9 +1159,7 @@ class WeChatManager:
                         "is_from_me": contact.get("is_from_me", False),
                         "replied": True  # 首次见到，标记为已回复
                     }
-
-            # 检查每个联系人是否有新消息
-            has_changes = False
+                    has_changes = True  # 初始化后需要保存状态
             for contact in current_contacts:
                 name = contact["name"]
                 current_message = contact.get("last_message", "")
