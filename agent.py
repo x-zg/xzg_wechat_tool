@@ -76,6 +76,8 @@ class WeChatManager:
         self._app = None
         self._window = None
         self._gw_window = None  # pygetwindow 窗口
+        self._contact_states = {}  # 记录每个联系人的状态 {name: {"last_message": "...", "replied": True}}
+        self._monitor_running = False  # 监控是否在运行
     
     def _find_wechat_path(self) -> Optional[str]:
         """查找微信安装路径"""
@@ -811,20 +813,10 @@ class WeChatManager:
             # 裁剪左侧聊天列表区域
             chat_list_img = img.crop((chat_list_left, chat_list_top, chat_list_right, chat_list_bottom))
             
-            # 保存临时截图用于 OCR
-            temp_path = os.path.join(os.path.dirname(__file__), "_temp_chat_list.png")
-            chat_list_img.save(temp_path)
-            
-            # OCR 识别
+            # OCR 识别（直接使用 numpy 数组）
             from rapidocr_onnxruntime import RapidOCR
             ocr = RapidOCR()
-            result, _ = ocr(temp_path)
-            
-            # 删除临时文件
-            try:
-                os.remove(temp_path)
-            except:
-                pass
+            result, _ = ocr(np.array(chat_list_img))
             
             if not result:
                 return {"status": "error", "message": "OCR 未识别到内容"}
@@ -972,7 +964,12 @@ class WeChatManager:
             return {"status": "error", "message": f"点击联系人失败: {str(e)}"}
     
     def monitor_chat_changes(self, previous_state: dict = None, interval: float = 2.0) -> Dict:
-        """监控聊天列表变化
+        """监控聊天列表变化（智能判断是否需要回复）
+        
+        核心逻辑：
+        1. 对比消息内容变化 → 判断是否是新消息
+        2. 检查是否已回复过该消息 → 避免重复回复
+        3. 只返回真正需要回复的联系人
         
         Args:
             previous_state: 上一次的状态（用于对比变化）
@@ -982,17 +979,9 @@ class WeChatManager:
             Dict: {
                 "status": "success",
                 "data": {
-                    "current_state": {...},  # 当前状态
-                    "changes": [  # 变化列表
-                        {
-                            "type": "new_message/position_change",
-                            "contact": "联系人名称",
-                            "details": "详细描述"
-                        }
-                    ],
-                    "unread_contacts": [  # 有未读消息的联系人
-                        {"name": "...", "position": {...}}
-                    ]
+                    "current_state": {...},
+                    "changes": [...],
+                    "need_reply_contacts": [...]  # 需要回复的联系人（排除已回复的）
                 }
             }
         """
@@ -1004,49 +993,63 @@ class WeChatManager:
             
             current_contacts = current_result["data"]["contacts"]
             changes = []
-            unread_contacts = []
+            need_reply_contacts = []  # 真正需要回复的联系人
             
-            # 如果有之前的状态，进行对比
-            if previous_state and "contacts" in previous_state:
-                prev_contacts = {c["name"]: c for c in previous_state["contacts"]}
+            # 初始化所有联系人的状态（首次运行）
+            for contact in current_contacts:
+                name = contact["name"]
+                if name not in self._contact_states:
+                    self._contact_states[name] = {
+                        "last_message": contact.get("last_message", ""),
+                        "replied": True  # 首次见到，标记为已回复（不自动回复历史消息）
+                    }
+                    logger.info(f"  初始化联系人状态: {name} -> 已知消息，标记为已回复")
+            
+            # 对比变化
+            for i, contact in enumerate(current_contacts):
+                name = contact["name"]
+                current_message = contact.get("last_message", "")
+                saved_state = self._contact_states.get(name, {})
+                saved_message = saved_state.get("last_message", "")
+                already_replied = saved_state.get("replied", False)
                 
-                for i, contact in enumerate(current_contacts):
-                    name = contact["name"]
-                    prev_contact = prev_contacts.get(name)
+                # 检测消息是否变化
+                if current_message != saved_message:
+                    changes.append({
+                        "type": "new_message",
+                        "contact": name,
+                        "details": f"新消息: {current_message}",
+                        "old_message": saved_message
+                    })
                     
-                    # 位置变化（新消息置顶）
-                    if prev_contact:
-                        prev_index = prev_contact.get("index", -1)
-                        if i != prev_index:
-                            changes.append({
-                                "type": "position_change",
-                                "contact": name,
-                                "details": f"位置从 {prev_index} 变为 {i}（可能有新消息）"
-                            })
-                        
-                        # 消息内容变化
-                        if contact["last_message"] != prev_contact.get("last_message", ""):
-                            changes.append({
-                                "type": "new_message",
-                                "contact": name,
-                                "details": f"新消息: {contact['last_message']}"
-                            })
-                            unread_contacts.append(contact)
-                    else:
-                        # 新出现的联系人（置顶的新消息）
-                        changes.append({
-                            "type": "new_contact",
-                            "contact": name,
-                            "details": f"新联系人出现在列表: {name}"
-                        })
-                        unread_contacts.append(contact)
+                    # 更新保存的消息
+                    self._contact_states[name]["last_message"] = current_message
+                    self._contact_states[name]["replied"] = False  # 新消息，标记为未回复
+                    
+                    # 需要回复
+                    need_reply_contacts.append({
+                        "name": name,
+                        "message": current_message,
+                        "position": contact.get("position")
+                    })
+                    
+                    logger.info(f"  检测到 {name} 有新消息: {current_message}")
+                    
+                elif not already_replied:
+                    # 消息没变，但之前标记为未回复（可能上次回复失败）
+                    need_reply_contacts.append({
+                        "name": name,
+                        "message": current_message,
+                        "position": contact.get("position")
+                    })
+                    logger.info(f"  {name} 之前未回复的消息，加入回复队列")
             
             return {
                 "status": "success",
                 "data": {
                     "current_state": {"contacts": current_contacts},
                     "changes": changes,
-                    "unread_contacts": unread_contacts,
+                    "need_reply_contacts": need_reply_contacts,
                     "has_changes": len(changes) > 0
                 }
             }
@@ -1091,7 +1094,14 @@ class WeChatManager:
     
     def start_chat_monitor(self, reply_handler: callable = None, interval: float = 3.0, 
                            max_loops: int = 100, auto_reply_message: str = None) -> Dict:
-        """启动聊天监控（阻塞式）
+        """启动聊天监控（阻塞式，智能回复）
+        
+        智能回复逻辑：
+        1. 首次运行：记录所有联系人的当前消息，标记为已回复（不回复历史消息）
+        2. 定时检测：只对比消息内容变化
+        3. 消息变化 → 标记为未回复，加入回复队列
+        4. 回复成功 → 标记为已回复
+        5. 消息未变化 + 已回复 → 跳过（避免重复回复）
         
         Args:
             reply_handler: 自定义回复处理函数 (contact_name, last_message) -> reply_message
@@ -1102,69 +1112,118 @@ class WeChatManager:
         Returns:
             Dict: 监控结果统计
         """
-        logger.info("启动聊天监控...")
+        logger.info("=" * 50)
+        logger.info("启动智能聊天监控...")
+        logger.info(f"监控间隔: {interval}秒, 最大循环: {max_loops}次")
+        if auto_reply_message:
+            logger.info(f"自动回复内容: {auto_reply_message}")
+        logger.info("=" * 50)
         
-        # 获取初始状态
-        initial_result = self.get_chat_list()
-        if initial_result["status"] != "success":
-            return initial_result
-        
-        previous_state = {"contacts": initial_result["data"]["contacts"]}
-        stats = {"loops": 0, "replies_sent": 0, "changes_detected": 0}
+        self._monitor_running = True
+        stats = {
+            "loops": 0, 
+            "replies_sent": 0, 
+            "changes_detected": 0,
+            "contacts_monitored": len(self._contact_states)
+        }
         
         try:
             for loop in range(max_loops):
+                if not self._monitor_running:
+                    logger.info("监控已停止")
+                    break
+                    
                 stats["loops"] = loop + 1
-                time.sleep(interval)
+                logger.info(f"\n----- 第 {stats['loops']} 次检查 -----")
                 
                 # 检测变化
-                monitor_result = self.monitor_chat_changes(previous_state)
+                monitor_result = self.monitor_chat_changes()
                 if monitor_result["status"] != "success":
                     logger.warning(f"监控检查失败: {monitor_result['message']}")
+                    time.sleep(interval)
                     continue
-                
-                # 更新状态
-                previous_state = monitor_result["data"]["current_state"]
                 
                 # 处理变化
                 if monitor_result["data"]["has_changes"]:
                     stats["changes_detected"] += 1
                     
                     for change in monitor_result["data"]["changes"]:
-                        logger.info(f"检测到变化: {change}")
+                        logger.info(f"  📩 检测到变化: {change}")
+                
+                # 智能回复（只回复需要回复的联系人）
+                need_reply = monitor_result["data"]["need_reply_contacts"]
+                
+                if need_reply and (reply_handler or auto_reply_message):
+                    logger.info(f"  需要回复的联系人: {len(need_reply)} 个")
                     
-                    # 自动回复
-                    if reply_handler or auto_reply_message:
-                        for contact in monitor_result["data"]["unread_contacts"]:
-                            contact_name = contact["name"]
-                            last_message = contact["last_message"]
+                    for contact in need_reply:
+                        contact_name = contact["name"]
+                        last_message = contact["message"]
+                        
+                        # 确定回复内容
+                        if reply_handler:
+                            reply = reply_handler(contact_name, last_message)
+                        else:
+                            reply = auto_reply_message
+                        
+                        if reply:
+                            logger.info(f"  📤 正在回复 {contact_name}: {reply}")
+                            reply_result = self.auto_reply_to_contact(contact_name, reply)
                             
-                            # 确定回复内容
-                            if reply_handler:
-                                reply = reply_handler(contact_name, last_message)
+                            if reply_result["status"] == "success":
+                                stats["replies_sent"] += 1
+                                # 标记为已回复
+                                self._contact_states[contact_name]["replied"] = True
+                                logger.info(f"  ✅ 已回复 {contact_name}")
                             else:
-                                reply = auto_reply_message
+                                logger.warning(f"  ❌ 回复失败: {reply_result['message']}")
                             
-                            if reply:
-                                reply_result = self.auto_reply_to_contact(contact_name, reply)
-                                if reply_result["status"] == "success":
-                                    stats["replies_sent"] += 1
-                                    logger.info(f"已自动回复 {contact_name}: {reply}")
-                                else:
-                                    logger.warning(f"回复失败: {reply_result['message']}")
-                                
-                                time.sleep(1)  # 回复间隔
+                            time.sleep(1)  # 回复间隔
+                else:
+                    if not need_reply:
+                        logger.info("  无需回复的联系人")
+                
+                stats["contacts_monitored"] = len(self._contact_states)
+                time.sleep(interval)
             
         except KeyboardInterrupt:
-            logger.info("监控被用户中断")
+            logger.info("\n监控被用户中断 (Ctrl+C)")
+            self._monitor_running = False
+        
+        logger.info("\n" + "=" * 50)
+        logger.info("监控结束")
+        logger.info(f"统计: 循环 {stats['loops']} 次, 检测 {stats['changes_detected']} 次变化, 发送 {stats['replies_sent']} 条回复")
+        logger.info("=" * 50)
         
         return {
             "status": "success",
             "data": {
                 "stats": stats,
+                "contact_states": self._contact_states,
                 "message": f"监控结束，共检测 {stats['changes_detected']} 次变化，发送 {stats['replies_sent']} 条回复"
             }
         }
+    
+    def stop_chat_monitor(self) -> Dict:
+        """停止聊天监控"""
+        self._monitor_running = False
+        logger.info("已发送停止监控信号")
+        return {"status": "success", "message": "已发送停止监控信号"}
+    
+    def get_contact_states(self) -> Dict:
+        """获取当前所有联系人的状态"""
+        return {
+            "status": "success",
+            "data": {
+                "contact_states": self._contact_states,
+                "total": len(self._contact_states)
+            }
+        }
+    
+    def reset_contact_states(self) -> Dict:
+        """重置所有联系人状态（清除回复记录）"""
+        self._contact_states = {}
+        return {"status": "success", "message": "已重置所有联系人状态"}
 
 
 # 全局管理器实例
