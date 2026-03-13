@@ -63,14 +63,42 @@ logger = logging.getLogger("WeChat_Tool")
 
 class WeChatManager:
     """微信客户端管理器"""
-
+    
     WAKE_UP_HOTKEY = ('ctrl', 'alt', 'w')
-
+    STATE_FILE = "wechat_contact_states.json"  # 状态持久化文件
+    
     def __init__(self):
         self._app = None
         self._window = None
         self._gw_window = None  # pygetwindow 窗口
         self._contact_states = {}  # 记录每个联系人的状态 {name: {"last_message": "...", "replied": True}}
+        self._load_states()  # 启动时加载状态
+    
+    def _get_state_file_path(self) -> str:
+        """获取状态文件路径"""
+        # 状态文件保存在agent.py所在目录
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(script_dir, self.STATE_FILE)
+    
+    def _load_states(self):
+        """从文件加载联系人状态"""
+        try:
+            state_file = self._get_state_file_path()
+            if os.path.exists(state_file):
+                with open(state_file, 'r', encoding='utf-8') as f:
+                    self._contact_states = json.load(f)
+        except Exception as e:
+            logger.debug(f"加载联系人状态失败: {e}")
+            self._contact_states = {}
+    
+    def _save_states(self):
+        """保存联系人状态到文件"""
+        try:
+            state_file = self._get_state_file_path()
+            with open(state_file, 'w', encoding='utf-8') as f:
+                json.dump(self._contact_states, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug(f"保存联系人状态失败: {e}")
 
     def _find_gw_window(self) -> Optional[Any]:
         """使用 pygetwindow 查找微信窗口"""
@@ -1088,6 +1116,7 @@ class WeChatManager:
                 # 标记为已回复
                 if contact_name in self._contact_states:
                     self._contact_states[contact_name]["replied"] = True
+                    self._save_states()  # 保存状态
                 return {"status": "success", "message": f"已回复 {contact_name}: {message}"}
             else:
                 return {"status": "error", "message": f"发送失败: {err}"}
@@ -1129,6 +1158,7 @@ class WeChatManager:
                     }
 
             # 检查每个联系人是否有新消息
+            has_changes = False
             for contact in current_contacts:
                 name = contact["name"]
                 current_message = contact.get("last_message", "")
@@ -1138,11 +1168,25 @@ class WeChatManager:
                 saved_is_from_me = saved_state.get("is_from_me", False)
                 already_replied = saved_state.get("replied", False)
 
+                # ===== 关键改进：检查是否手动回复 =====
+                # 如果当前最后一条消息来自我，说明已经回复了（手动或自动）
+                # 无论之前的状态如何，都应该标记为已回复
+                if current_is_from_me and not already_replied:
+                    # 检测到手动回复
+                    self._contact_states[name]["replied"] = True
+                    has_changes = True
+                    # 不加入 new_messages，因为已经回复了
+                    # 更新消息内容
+                    self._contact_states[name]["last_message"] = current_message
+                    self._contact_states[name]["is_from_me"] = current_is_from_me
+                    continue
+
                 # 检测消息是否变化
                 if current_message != saved_message or current_is_from_me != saved_is_from_me:
                     # 更新保存的消息
                     self._contact_states[name]["last_message"] = current_message
                     self._contact_states[name]["is_from_me"] = current_is_from_me
+                    has_changes = True
 
                     # 只有对方发的新消息才需要回复
                     if not current_is_from_me:
@@ -1154,15 +1198,22 @@ class WeChatManager:
                             "is_from_me": False
                         })
                     else:
+                        # 当前消息来自我，标记为已回复
                         self._contact_states[name]["replied"] = True
 
                 elif not already_replied and not current_is_from_me:
+                    # 消息没有变化，但之前标记为未回复，且当前消息不是来自我
+                    # 这种情况可能是：对方发了消息，但还没有回复
                     new_messages.append({
                         "contact": name,
                         "message": current_message,
                         "position": contact.get("position"),
                         "is_from_me": False
                     })
+
+            # 如果有状态变化，保存到文件
+            if has_changes:
+                self._save_states()
 
             return {
                 "status": "success",
@@ -1191,6 +1242,7 @@ class WeChatManager:
     def reset_contact_states(self) -> Dict:
         """重置所有联系人状态"""
         self._contact_states = {}
+        self._save_states()  # 保存空状态
         return {"status": "success", "message": "已重置所有联系人状态"}
 
 
