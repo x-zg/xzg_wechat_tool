@@ -226,29 +226,23 @@ class WeChatManager:
                 - 成功: (window_object, None)
                 - 失败: (None, error_message)
         """
-        logger.info("开始检查微信窗口状态...")
-        
         # 步骤1: 查找微信窗口（最多尝试 3 次）
         w = None
         for attempt in range(3):
             w = self._find_gw_window()
             if w:
                 break
-            logger.debug(f"未找到窗口 (尝试 {attempt + 1}/3)")
             time.sleep(0.3)
         
         # 步骤2: 判断窗口状态并处理
         if not w:
             # 窗口不存在（微信在托盘区），用快捷键唤醒（最多尝试 3 次）
-            logger.info("窗口不存在，尝试快捷键唤醒...")
             for attempt in range(3):
                 pyautogui.hotkey(*self.WAKE_UP_HOTKEY)
                 time.sleep(0.8)
                 w = self._find_gw_window()
                 if w:
-                    logger.info(f"快捷键唤醒成功 (尝试 {attempt + 1}/3)")
                     break
-                logger.debug(f"快捷键唤醒未找到窗口 (尝试 {attempt + 1}/3)")
             
             if not w:
                 return None, "微信未运行，请手动打开微信"
@@ -258,11 +252,8 @@ class WeChatManager:
         if not hwnd:
             return None, "无法获取微信窗口句柄"
         
-        logger.info(f"找到微信窗口: hwnd={hwnd}, title={w.title}")
-        
         # 步骤4: 检查窗口是否最小化
         if win32gui.IsIconic(hwnd):
-            logger.info("窗口已最小化，恢复窗口...")
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
             time.sleep(0.3)
         
@@ -274,12 +265,7 @@ class WeChatManager:
             # 验证窗口是否真的在前台
             foreground_hwnd = win32gui.GetForegroundWindow()
             if foreground_hwnd == hwnd:
-                logger.info("窗口已成功激活到前台")
                 break
-            
-            logger.debug(f"窗口未在前台 (尝试 {attempt + 1}/3)，hwnd={hwnd}, foreground={foreground_hwnd}")
-        else:
-            logger.warning("窗口激活可能失败，但继续操作")
         
         self._gw_window = w
         return w, None
@@ -296,14 +282,10 @@ class WeChatManager:
                 hwnd = win32gui.FindWindow(None, w.title)
             
             if not hwnd:
-                logger.warning("无法获取窗口句柄")
                 return False
-            
-            logger.info(f"  正在激活窗口 hwnd={hwnd}...")
             
             # ===== 方法1: 先恢复窗口（如果最小化）=====
             if win32gui.IsIconic(hwnd):
-                logger.info("  窗口已最小化，正在恢复...")
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
                 time.sleep(0.2)
             
@@ -312,8 +294,6 @@ class WeChatManager:
             foreground_thread = win32process.GetWindowThreadProcessId(foreground_hwnd)[0]
             current_thread = win32api.GetCurrentThreadId()
             target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
-            
-            logger.info(f"  线程信息: 当前={current_thread}, 前台={foreground_thread}, 目标={target_thread}")
             
             # 附加线程输入（使用 ctypes 调用 AttachThreadInput）
             attach_threads = []
@@ -324,8 +304,8 @@ class WeChatManager:
                 if foreground_thread != target_thread and foreground_thread != current_thread:
                     user32.AttachThreadInput(foreground_thread, target_thread, True)
                     attach_threads.append((foreground_thread, target_thread))
-            except Exception as e:
-                logger.warning(f"  AttachThreadInput 失败: {e}")
+            except Exception:
+                pass
             
             # ===== 方法3: 设置窗口位置和状态 =====
             # 先显示窗口
@@ -354,7 +334,6 @@ class WeChatManager:
             # ===== 方法5: 如果前面方法失败，使用模拟按键绕过限制 =====
             new_foreground = win32gui.GetForegroundWindow()
             if new_foreground != hwnd:
-                logger.info("  常规方法激活失败，尝试模拟 Alt 键绕过限制...")
                 # 模拟按下 Alt 键（这会允许 SetForegroundWindow 工作）
                 win32api.keybd_event(0x12, 0, 0, 0)  # Alt down
                 time.sleep(0.1)
@@ -366,34 +345,27 @@ class WeChatManager:
             # 验证激活结果
             new_foreground = win32gui.GetForegroundWindow()
             if new_foreground == hwnd:
-                logger.info(f"  ✓ 窗口激活成功!")
                 return True
             else:
                 # ===== 方法6: 最后尝试 pygetwindow =====
-                logger.warning(f"  Win32 激活失败，尝试 pygetwindow...")
                 try:
                     w.activate()
                     time.sleep(0.3)
                     new_foreground = win32gui.GetForegroundWindow()
                     if new_foreground == hwnd:
-                        logger.info(f"  ✓ pygetwindow 激活成功!")
                         return True
-                except Exception as e:
-                    logger.warning(f"  pygetwindow 激活也失败: {e}")
+                except Exception:
+                    pass
                 
-                logger.warning(f"  ⚠ 窗口激活可能失败，当前前台窗口 hwnd={new_foreground}")
                 return True  # 仍然返回 True，让调用者决定是否重试
             
-        except Exception as e:
-            logger.error(f"激活窗口失败: {e}")
+        except Exception:
             # 最后尝试 pygetwindow 方法
             try:
                 w.activate()
                 time.sleep(0.3)
-                logger.info("  使用 pygetwindow.activate() 成功")
                 return True
-            except Exception as e2:
-                logger.error(f"pygetwindow 激活也失败: {e2}")
+            except Exception:
                 return False
     
     def get_main_window(self, force_refresh: bool = False, activate_first: bool = False) -> Optional[Any]:
@@ -879,13 +851,10 @@ class WeChatManager:
                 return {"status": "error", "message": "无法获取窗口位置"}
             
             # 截取聊天列表区域
-            logger.info("正在截图...")
             img = self.capture(show_flash=show_flash)
             if not img:
                 logger.error("截图失败")
                 return {"status": "error", "message": "截图失败"}
-            
-            logger.info(f"截图成功: {img.size}")
             
             # 左侧聊天列表区域（相对于图像的坐标）
             # 图像坐标从 (0, 0) 开始
@@ -897,13 +866,11 @@ class WeChatManager:
             
             # 裁剪左侧聊天列表区域
             chat_list_img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
-            logger.info(f"裁剪聊天列表区域: ({crop_left}, {crop_top}, {crop_right}, {crop_bottom})")
             
             # 保存窗口位置用于后续计算点击坐标
             self._window_rect = rect
             
             # OCR 识别（直接使用 numpy 数组）
-            logger.info("正在进行 OCR 识别...")
             from rapidocr_onnxruntime import RapidOCR
             ocr = RapidOCR()
             result, _ = ocr(np.array(chat_list_img))
@@ -911,12 +878,6 @@ class WeChatManager:
             if not result:
                 logger.error("OCR 未识别到内容")
                 return {"status": "error", "message": "OCR 未识别到内容"}
-            
-            # 打印 OCR 原始识别结果
-            logger.info(f"OCR 识别到 {len(result)} 条文本:")
-            for i, item in enumerate(result):
-                box, text, conf = item
-                logger.info(f"  OCR[{i}]: '{text}' (置信度: {conf:.2f}, 位置: x={box[0][0]:.0f}, y={box[0][1]:.0f})")
             
             # 解析 OCR 结果，提取联系人信息
             # result 格式: [[box, text, confidence], ...]
@@ -992,9 +953,6 @@ class WeChatManager:
                         # 去掉前缀，保留实际消息内容
                         message_text = message_text[2:].strip()
                 
-                # 调试日志：打印识别到的联系人信息
-                logger.info(f"  联系人[{i}]: 名称={name_text}, 消息={message_text}, is_from_me={is_from_me}")
-                
                 # 计算点击位置（转换回屏幕坐标）
                 if group and hasattr(self, '_window_rect'):
                     avg_y = sum(l["y"] for l in group) / len(group)
@@ -1016,7 +974,6 @@ class WeChatManager:
                         }
                     })
             
-            logger.info(f"识别到 {len(contacts)} 个联系人")
             return {
                 "status": "success",
                 "data": {
@@ -1105,10 +1062,6 @@ class WeChatManager:
             changes = []
             need_reply_contacts = []  # 真正需要回复的联系人
             
-            # 调试：打印当前识别到的所有联系人
-            logger.info(f"当前识别到的联系人: {[c['name'] for c in current_contacts]}")
-            logger.info(f"已保存的联系人状态: {list(self._contact_states.keys())}")
-            
             # 记录是否是首次监控（用于判断是否需要检测变化）
             is_first_run = len(self._contact_states) == 0
             
@@ -1127,12 +1080,8 @@ class WeChatManager:
                     saved_is_from_me = saved_state.get("is_from_me", False)
                     already_replied = saved_state.get("replied", False)
                     
-                    # 调试日志：打印消息对比
-                    logger.info(f"  对比[{i}] {name}: 当前='{current_message}'(me={current_is_from_me}) vs 已保存='{saved_message}'(me={saved_is_from_me})")
-                    
                     # 检测消息是否变化
                     if current_message != saved_message or current_is_from_me != saved_is_from_me:
-                        logger.info(f"  🔍 检测到 {name} 消息变化: '{saved_message}' -> '{current_message}'")
                         # 更新保存的消息
                         self._contact_states[name]["last_message"] = current_message
                         self._contact_states[name]["is_from_me"] = current_is_from_me
@@ -1151,7 +1100,7 @@ class WeChatManager:
                                 "message": current_message,
                                 "position": contact.get("position")
                             })
-                            logger.info(f"  📩 {name} 对方发来新消息: {current_message}")
+                            logger.info(f"📩 {name} 对方发来新消息: {current_message}")
                         else:
                             # 是我发的消息，标记为已回复
                             self._contact_states[name]["replied"] = True
@@ -1161,7 +1110,6 @@ class WeChatManager:
                                 "details": f"我发送了消息: {current_message}",
                                 "old_message": saved_message
                             })
-                            logger.info(f"  📤 {name} 我发送了消息: {current_message}")
                         
                     elif not already_replied and not current_is_from_me:
                         # 消息没变，但之前标记为未回复且不是我的消息
@@ -1170,16 +1118,13 @@ class WeChatManager:
                             "message": current_message,
                             "position": contact.get("position")
                         })
-                        logger.info(f"  {name} 之前未回复的消息，加入回复队列")
                 
                 else:
                     # 新联系人（之前不在列表中）
-                    logger.info(f"  🆕 发现新联系人: {name}")
                     # 如果不是首次运行，新联系人出现在列表中可能是因为有新消息
                     if not is_first_run:
                         # 检查消息是否是对方发的（不是"我:"开头）
                         if not current_is_from_me and current_message:
-                            logger.info(f"  📩 {name} 新联系人的新消息: {current_message}")
                             changes.append({
                                 "type": "new_message_from_other",
                                 "contact": name,
@@ -1200,7 +1145,6 @@ class WeChatManager:
                     }
                     if not is_first_run and need_reply_contacts and need_reply_contacts[-1]["name"] == name:
                         self._contact_states[name]["replied"] = False
-                    logger.info(f"  初始化联系人: {name} -> 消息='{current_message}', replied={self._contact_states[name]['replied']}")
             
             return {
                 "status": "success",
@@ -1297,7 +1241,6 @@ class WeChatManager:
                         "is_from_me": contact.get("is_from_me", False),
                         "replied": True  # 首次见到，标记为已回复（不自动回复历史消息）
                     }
-                    logger.debug(f"初始化联系人状态: {name} -> 已知消息，标记为已回复")
             
             # 检查每个联系人是否有新消息
             for contact in current_contacts:
@@ -1324,11 +1267,9 @@ class WeChatManager:
                             "position": contact.get("position"),
                             "is_from_me": False
                         })
-                        logger.info(f"📩 {name} 对方发来新消息: {current_message}")
                     else:
                         # 是我发的消息，标记为已回复
                         self._contact_states[name]["replied"] = True
-                        logger.info(f"📤 {name} 我发送了消息: {current_message}")
                 
                 elif not already_replied and not current_is_from_me:
                     # 消息没变，但之前标记为未回复且不是我的消息
@@ -1380,21 +1321,16 @@ class WeChatManager:
         if self._monitor_running and self._monitor_thread and self._monitor_thread.is_alive():
             return {"status": "error", "message": "监控已在运行中，请先停止当前监控"}
         
-        logger.info("=" * 50)
-        logger.info("启动智能聊天监控（异步模式）...")
-        logger.info(f"监控间隔: {interval}秒, 最大循环: {max_loops}次, 超时: {timeout}秒")
+        logger.info("启动智能聊天监控...")
         if auto_reply_message:
             logger.info(f"自动回复内容: {auto_reply_message}")
-        logger.info("=" * 50)
         
         # ===== 重要：在主线程中先确保微信窗口已就绪 =====
         # Windows 限制后台线程操作前台窗口，所以必须在主线程中先激活窗口
-        logger.info("预激活微信窗口（主线程）...")
         w, error = self._ensure_window_ready()
         if error:
             logger.error(f"无法激活微信窗口: {error}")
             return {"status": "error", "message": error}
-        logger.info(f"微信窗口已就绪: {w.title}")
         
         # 重置状态
         self._monitor_running = True
@@ -1415,52 +1351,35 @@ class WeChatManager:
             try:
                 with open(self.MONITOR_PID_FILE, 'w') as f:
                     f.write(str(os.getpid()))
-                logger.info(f"已写入监控 PID 文件: {self.MONITOR_PID_FILE}")
-            except Exception as e:
-                logger.warning(f"写入 PID 文件失败: {e}")
+            except Exception:
+                pass
             
             try:
                 for loop in range(max_loops):
                     # 检查是否被停止
                     if not self._monitor_running or self._stop_event.is_set():
-                        logger.info("监控已停止")
                         break
                     
                     # 检查超时
                     elapsed = time.time() - start_time
                     if elapsed >= timeout:
-                        logger.info(f"达到超时时间 {timeout} 秒，自动停止监控")
+                        logger.info(f"监控超时({timeout}秒)，自动停止")
                         break
                         
                     stats["loops"] = loop + 1
-                    logger.info(f"\n----- 第 {stats['loops']} 次检查 (已运行 {int(elapsed)} 秒) -----")
                     
                     # 检测变化
-                    logger.info("调用 monitor_chat_changes() 检测变化...")
                     monitor_result = self.monitor_chat_changes()
                     if monitor_result["status"] != "success":
-                        logger.warning(f"监控检查失败: {monitor_result['message']}")
                         # 使用 Event.wait 替代 sleep，可被中断
                         if self._stop_event.wait(interval):
-                            logger.info("监控被停止信号中断")
                             break
                         continue
-                    
-                    logger.info(f"监控检查成功: has_changes={monitor_result['data']['has_changes']}")
-                    
-                    # 处理变化
-                    if monitor_result["data"]["has_changes"]:
-                        stats["changes_detected"] += 1
-                        
-                        for change in monitor_result["data"]["changes"]:
-                            logger.info(f"  📩 检测到变化: {change}")
                     
                     # 智能回复（只回复需要回复的联系人）
                     need_reply = monitor_result["data"]["need_reply_contacts"]
                     
                     if need_reply and (reply_handler or auto_reply_message):
-                        logger.info(f"  需要回复的联系人: {len(need_reply)} 个")
-                        
                         for contact in need_reply:
                             # 检查是否被停止
                             if not self._monitor_running or self._stop_event.is_set():
@@ -1476,29 +1395,23 @@ class WeChatManager:
                                 reply = auto_reply_message
                             
                             if reply:
-                                logger.info(f"  📤 正在回复 {contact_name}: {reply}")
                                 reply_result = self.auto_reply_to_contact(contact_name, reply)
                                 
                                 if reply_result["status"] == "success":
                                     stats["replies_sent"] += 1
                                     # 标记为已回复
                                     self._contact_states[contact_name]["replied"] = True
-                                    logger.info(f"  ✅ 已回复 {contact_name}")
+                                    logger.info(f"已回复 {contact_name}: {reply}")
                                 else:
-                                    logger.warning(f"  ❌ 回复失败: {reply_result['message']}")
+                                    logger.warning(f"回复失败: {reply_result['message']}")
                                 
                                 # 回复间隔（可中断）
                                 if self._stop_event.wait(1):
-                                    logger.info("监控被停止信号中断")
                                     break
-                    else:
-                        if not need_reply:
-                            logger.info("  无需回复的联系人")
                     
                     stats["contacts_monitored"] = len(self._contact_states)
                     # 使用 Event.wait 替代 sleep，可被中断
                     if self._stop_event.wait(interval):
-                        logger.info("监控被停止信号中断")
                         break
                 
             except Exception as e:
@@ -1509,22 +1422,18 @@ class WeChatManager:
                 try:
                     if os.path.exists(self.MONITOR_PID_FILE):
                         os.remove(self.MONITOR_PID_FILE)
-                        logger.info("已清理 PID 文件")
-                except Exception as e:
-                    logger.warning(f"清理 PID 文件失败: {e}")
+                except Exception:
+                    pass
                 
                 self._monitor_running = False
-                logger.info("\n" + "=" * 50)
-                logger.info("监控结束")
-                logger.info(f"统计: 循环 {stats['loops']} 次, 检测 {stats['changes_detected']} 次变化, 发送 {stats['replies_sent']} 条回复")
-                logger.info("=" * 50)
+                logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复")
                 
                 self._monitor_result = {
                     "status": "success",
                     "data": {
                         "stats": stats,
                         "contact_states": self._contact_states,
-                        "message": f"监控结束，共检测 {stats['changes_detected']} 次变化，发送 {stats['replies_sent']} 条回复"
+                        "message": f"监控结束，共发送 {stats['replies_sent']} 条回复"
                     }
                 }
         
@@ -1541,109 +1450,6 @@ class WeChatManager:
                 "timeout": timeout
             }
         }
-        
-        # 写入 PID 文件（用于跨进程停止）
-        try:
-            with open(self.MONITOR_PID_FILE, 'w') as f:
-                f.write(str(os.getpid()))
-            logger.info(f"已写入监控 PID 文件: {self.MONITOR_PID_FILE}")
-        except Exception as e:
-            logger.warning(f"写入 PID 文件失败: {e}")
-        
-        try:
-            for loop in range(max_loops):
-                # 检查超时
-                elapsed = time.time() - start_time
-                if elapsed >= timeout:
-                    logger.info(f"达到超时时间 {timeout} 秒，自动停止监控")
-                    break
-                    
-                if not self._monitor_running:
-                    logger.info("监控已停止")
-                    break
-                    
-                stats["loops"] = loop + 1
-                logger.info(f"\n----- 第 {stats['loops']} 次检查 (已运行 {int(elapsed)} 秒) -----")
-                
-                # 检测变化
-                logger.info("调用 monitor_chat_changes() 检测变化...")
-                monitor_result = self.monitor_chat_changes()
-                if monitor_result["status"] != "success":
-                    logger.warning(f"监控检查失败: {monitor_result['message']}")
-                    time.sleep(interval)
-                    continue
-                
-                logger.info(f"监控检查成功: has_changes={monitor_result['data']['has_changes']}")
-                
-                # 处理变化
-                if monitor_result["data"]["has_changes"]:
-                    stats["changes_detected"] += 1
-                    
-                    for change in monitor_result["data"]["changes"]:
-                        logger.info(f"  📩 检测到变化: {change}")
-                
-                # 智能回复（只回复需要回复的联系人）
-                need_reply = monitor_result["data"]["need_reply_contacts"]
-                
-                if need_reply and (reply_handler or auto_reply_message):
-                    logger.info(f"  需要回复的联系人: {len(need_reply)} 个")
-                    
-                    for contact in need_reply:
-                        contact_name = contact["name"]
-                        last_message = contact["message"]
-                        
-                        # 确定回复内容
-                        if reply_handler:
-                            reply = reply_handler(contact_name, last_message)
-                        else:
-                            reply = auto_reply_message
-                        
-                        if reply:
-                            logger.info(f"  📤 正在回复 {contact_name}: {reply}")
-                            reply_result = self.auto_reply_to_contact(contact_name, reply)
-                            
-                            if reply_result["status"] == "success":
-                                stats["replies_sent"] += 1
-                                # 标记为已回复
-                                self._contact_states[contact_name]["replied"] = True
-                                logger.info(f"  ✅ 已回复 {contact_name}")
-                            else:
-                                logger.warning(f"  ❌ 回复失败: {reply_result['message']}")
-                            
-                            time.sleep(1)  # 回复间隔
-                else:
-                    if not need_reply:
-                        logger.info("  无需回复的联系人")
-                
-                stats["contacts_monitored"] = len(self._contact_states)
-                time.sleep(interval)
-            
-        except KeyboardInterrupt:
-            logger.info("\n监控被用户中断 (Ctrl+C)")
-            self._monitor_running = False
-        
-        finally:
-            # 清理 PID 文件
-            try:
-                if os.path.exists(self.MONITOR_PID_FILE):
-                    os.remove(self.MONITOR_PID_FILE)
-                    logger.info("已清理 PID 文件")
-            except Exception as e:
-                logger.warning(f"清理 PID 文件失败: {e}")
-        
-        logger.info("\n" + "=" * 50)
-        logger.info("监控结束")
-        logger.info(f"统计: 循环 {stats['loops']} 次, 检测 {stats['changes_detected']} 次变化, 发送 {stats['replies_sent']} 条回复")
-        logger.info("=" * 50)
-        
-        return {
-            "status": "success",
-            "data": {
-                "stats": stats,
-                "contact_states": self._contact_states,
-                "message": f"监控结束，共检测 {stats['changes_detected']} 次变化，发送 {stats['replies_sent']} 条回复"
-            }
-        }
     
     def stop_chat_monitor(self) -> Dict:
         """停止聊天监控（支持线程内和跨进程停止）
@@ -1654,20 +1460,15 @@ class WeChatManager:
         """
         # 方法1：停止当前进程内的后台线程
         if self._monitor_thread and self._monitor_thread.is_alive():
-            logger.info("正在停止后台监控线程...")
             self._monitor_running = False
             self._stop_event.set()  # 发送停止信号，立即中断 Event.wait()
             # 等待线程结束（最多等待3秒）
             self._monitor_thread.join(timeout=3)
-            if self._monitor_thread.is_alive():
-                logger.warning("后台线程未能在3秒内停止")
-            else:
-                logger.info("后台监控线程已停止")
+            if not self._monitor_thread.is_alive():
                 return {"status": "success", "message": "已停止监控"}
         
         # 方法2：通过 PID 文件停止其他进程
         if not os.path.exists(self.MONITOR_PID_FILE):
-            logger.info("未找到监控 PID 文件，可能没有监控在运行")
             # 重置状态
             self._monitor_running = False
             self._stop_event.set()  # 确保停止信号已设置
@@ -1678,8 +1479,6 @@ class WeChatManager:
             with open(self.MONITOR_PID_FILE, 'r') as f:
                 pid = int(f.read().strip())
             
-            logger.info(f"读取到监控进程 PID: {pid}")
-            
             # 如果是当前进程，直接停止
             if pid == os.getpid():
                 self._monitor_running = False
@@ -1689,15 +1488,12 @@ class WeChatManager:
             
             # 检查进程是否存在
             if not psutil.pid_exists(pid):
-                logger.info(f"PID {pid} 进程不存在，清理 PID 文件")
                 os.remove(self.MONITOR_PID_FILE)
                 return {"status": "success", "message": "监控进程已不存在，已清理 PID 文件"}
             
             # 获取进程信息
             try:
                 process = psutil.Process(pid)
-                process_name = process.name()
-                logger.info(f"找到进程: PID={pid}, 名称={process_name}")
             except psutil.NoSuchProcess:
                 os.remove(self.MONITOR_PID_FILE)
                 return {"status": "success", "message": "进程已不存在"}
@@ -1709,29 +1505,24 @@ class WeChatManager:
                 # 等待最多3秒
                 try:
                     process.wait(timeout=3)
-                    logger.info(f"进程 {pid} 已优雅终止")
                 except psutil.TimeoutExpired:
                     # 如果还没终止，强制杀死
                     process.kill()
-                    logger.info(f"进程 {pid} 已强制终止")
                 
             except psutil.NoSuchProcess:
-                logger.info(f"进程 {pid} 已不存在")
+                pass
             except psutil.AccessDenied:
-                logger.warning(f"无权限终止进程 {pid}，可能需要管理员权限")
                 return {"status": "error", "message": f"无权限终止监控进程 (PID={pid})，可能需要管理员权限"}
             
             # 清理 PID 文件
             try:
                 os.remove(self.MONITOR_PID_FILE)
-                logger.info("已清理 PID 文件")
-            except Exception as e:
-                logger.warning(f"清理 PID 文件失败: {e}")
+            except Exception:
+                pass
             
             return {"status": "success", "message": f"已停止监控进程 (PID={pid})"}
             
-        except ValueError as e:
-            logger.error(f"PID 文件格式错误: {e}")
+        except ValueError:
             try:
                 os.remove(self.MONITOR_PID_FILE)
             except:
@@ -1739,7 +1530,6 @@ class WeChatManager:
             return {"status": "error", "message": "PID 文件格式错误，已清理"}
             
         except Exception as e:
-            logger.error(f"停止监控失败: {e}")
             return {"status": "error", "message": f"停止监控失败: {str(e)}"}
     
     def get_contact_states(self) -> Dict:

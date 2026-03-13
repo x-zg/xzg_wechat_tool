@@ -98,9 +98,6 @@ def ocr_endpoint(win, word=None, fast_mode=False):
             # 去重合并
             all_results = _deduplicate_results(all_results)
         
-        elapsed = time.time() - start_time
-        logger.info(f"OCR 完成: {elapsed:.2f}s, 识别到 {len(all_results)} 个文本")
-        
         # 关键词匹配
         if word is None:
             return all_results
