@@ -823,7 +823,7 @@ class WeChatManager:
     
     # ==================== 聊天列表监控功能 ====================
     
-    def get_chat_list(self, count: int = 5, show_flash: bool = False) -> Dict:
+    def get_chat_list(self, count: int = 5, show_flash: bool = True) -> Dict:
         """获取左侧聊天列表的前N个联系人
         
         通过 OCR 识别左侧聊天列表区域，提取联系人信息。
