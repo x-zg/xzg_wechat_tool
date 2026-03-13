@@ -49,8 +49,8 @@ import ctypes
 # 获取 user32 API
 user32 = ctypes.windll.user32
 
-# 全局变量：是否显示截图闪烁
-FLASH_CAPTURE_ENABLED = False
+# 全局变量：是否显示截图闪烁（默认开启）
+FLASH_CAPTURE_ENABLED = True
 FLASH_DURATION = 0.5  # 闪烁持续时间（秒）
 
 # ============== 配置日志输出编码为 UTF-8 ==============
@@ -868,9 +868,13 @@ class WeChatManager:
                 return {"status": "error", "message": "无法获取窗口位置"}
             
             # 截取聊天列表区域
+            logger.info("正在截图...")
             img = self.capture()
             if not img:
+                logger.error("截图失败")
                 return {"status": "error", "message": "截图失败"}
+            
+            logger.info(f"截图成功: {img.size}")
             
             # 左侧聊天列表区域（相对于图像的坐标）
             # 图像坐标从 (0, 0) 开始
@@ -882,16 +886,19 @@ class WeChatManager:
             
             # 裁剪左侧聊天列表区域
             chat_list_img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
+            logger.info(f"裁剪聊天列表区域: ({crop_left}, {crop_top}, {crop_right}, {crop_bottom})")
             
             # 保存窗口位置用于后续计算点击坐标
             self._window_rect = rect
             
             # OCR 识别（直接使用 numpy 数组）
+            logger.info("正在进行 OCR 识别...")
             from rapidocr_onnxruntime import RapidOCR
             ocr = RapidOCR()
             result, _ = ocr(np.array(chat_list_img))
             
             if not result:
+                logger.error("OCR 未识别到内容")
                 return {"status": "error", "message": "OCR 未识别到内容"}
             
             # 解析 OCR 结果，提取联系人信息
@@ -1355,11 +1362,14 @@ class WeChatManager:
                 logger.info(f"\n----- 第 {stats['loops']} 次检查 (已运行 {int(elapsed)} 秒) -----")
                 
                 # 检测变化
+                logger.info("调用 monitor_chat_changes() 检测变化...")
                 monitor_result = self.monitor_chat_changes()
                 if monitor_result["status"] != "success":
                     logger.warning(f"监控检查失败: {monitor_result['message']}")
                     time.sleep(interval)
                     continue
+                
+                logger.info(f"监控检查成功: has_changes={monitor_result['data']['has_changes']}")
                 
                 # 处理变化
                 if monitor_result["data"]["has_changes"]:
