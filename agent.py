@@ -684,6 +684,417 @@ class WeChatManager:
             img.save(buffered, format="PNG")
             img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
             return {"status": "success", "data": {"image_base64": img_base64}}
+    
+    # ==================== 聊天列表监控功能 ====================
+    
+    def get_chat_list(self, count: int = 5) -> Dict:
+        """获取左侧聊天列表的前N个联系人
+        
+        通过 OCR 识别左侧聊天列表区域，提取联系人信息。
+        
+        Args:
+            count: 获取的联系人数量（默认5个）
+        
+        Returns:
+            Dict: {
+                "status": "success/error",
+                "data": {
+                    "contacts": [
+                        {
+                            "index": 0,
+                            "name": "联系人名称",
+                            "last_message": "最后一条消息",
+                            "position": {"x": 100, "y": 150},  # 点击位置
+                            "rect": {"left": 0, "top": 120, "right": 250, "bottom": 170}
+                        },
+                        ...
+                    ],
+                    "total": 5
+                }
+            }
+        """
+        try:
+            from OCR import ocr_endpoint
+            
+            # 确保窗口就绪
+            w, error = self._ensure_window_ready()
+            if error:
+                return {"status": "error", "message": error}
+            
+            # 获取窗口位置
+            rect = self.get_window_rect()
+            if not rect:
+                return {"status": "error", "message": "无法获取窗口位置"}
+            
+            # 左侧聊天列表区域（大约左侧 280 像素宽度）
+            chat_list_width = 280
+            chat_list_left = rect["left"]
+            chat_list_top = rect["top"] + 60  # 跳过搜索框
+            chat_list_right = rect["left"] + chat_list_width
+            chat_list_bottom = rect["bottom"]
+            
+            # 截取聊天列表区域
+            img = self.capture()
+            if not img:
+                return {"status": "error", "message": "截图失败"}
+            
+            # 裁剪左侧聊天列表区域
+            chat_list_img = img.crop((chat_list_left, chat_list_top, chat_list_right, chat_list_bottom))
+            
+            # 保存临时截图用于 OCR
+            temp_path = os.path.join(os.path.dirname(__file__), "_temp_chat_list.png")
+            chat_list_img.save(temp_path)
+            
+            # OCR 识别
+            from rapidocr_onnxruntime import RapidOCR
+            ocr = RapidOCR()
+            result, _ = ocr(temp_path)
+            
+            # 删除临时文件
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+            
+            if not result:
+                return {"status": "error", "message": "OCR 未识别到内容"}
+            
+            # 解析 OCR 结果，提取联系人信息
+            # result 格式: [[box, text, confidence], ...]
+            contacts = []
+            current_y = 0
+            contact_height = 65  # 每个联系人项大约 65 像素高度
+            
+            # 按位置分组（同一行的文字属于同一个联系人）
+            lines = []
+            for item in result:
+                box, text, conf = item
+                # box 是四个点的坐标 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                y_pos = (box[0][1] + box[2][1]) / 2  # 取中心 Y 坐标
+                x_pos = box[0][0]
+                
+                # 过滤无效文本（太短的、特殊字符等）
+                if len(text.strip()) < 1:
+                    continue
+                
+                lines.append({
+                    "text": text,
+                    "y": y_pos,
+                    "x": x_pos,
+                    "box": box
+                })
+            
+            # 按 Y 坐标排序并分组
+            lines.sort(key=lambda l: l["y"])
+            
+            # 分组：相邻的行（Y 差距小于 30）属于同一个联系人
+            groups = []
+            current_group = []
+            last_y = -100
+            
+            for line in lines:
+                if abs(line["y"] - last_y) < 30:
+                    current_group.append(line)
+                else:
+                    if current_group:
+                        groups.append(current_group)
+                    current_group = [line]
+                last_y = line["y"]
+            
+            if current_group:
+                groups.append(current_group)
+            
+            # 解析每个分组为联系人信息
+            for i, group in enumerate(groups[:count]):
+                if not group:
+                    continue
+                
+                # 联系人名称通常是该组中最左边且靠上的文字
+                name_text = None
+                message_text = None
+                name_y = float('inf')
+                
+                for line in group:
+                    text = line["text"].strip()
+                    # 名称通常在左侧，消息在右侧或下方
+                    if line["x"] < 80 and line["y"] < name_y:
+                        # 可能是名称
+                        if not name_text or line["y"] < name_y:
+                            name_text = text
+                            name_y = line["y"]
+                    elif len(text) > 2:
+                        message_text = text
+                
+                # 计算点击位置（转换回屏幕坐标）
+                if group:
+                    avg_y = sum(l["y"] for l in group) / len(group)
+                    click_x = chat_list_left + 140  # 列表中间位置
+                    click_y = chat_list_top + avg_y + 30  # 加上偏移，确保点击到项目
+                    
+                    contacts.append({
+                        "index": i,
+                        "name": name_text or f"未知联系人{i+1}",
+                        "last_message": message_text or "",
+                        "position": {"x": int(click_x), "y": int(click_y)},
+                        "rect": {
+                            "left": chat_list_left,
+                            "top": int(chat_list_top + avg_y - 20),
+                            "right": chat_list_right,
+                            "bottom": int(chat_list_top + avg_y + 50)
+                        }
+                    })
+            
+            logger.info(f"识别到 {len(contacts)} 个联系人")
+            return {
+                "status": "success",
+                "data": {
+                    "contacts": contacts,
+                    "total": len(contacts)
+                }
+            }
+            
+        except ImportError as e:
+            return {"status": "error", "message": f"OCR 模块导入失败: {e}"}
+        except Exception as e:
+            logger.error(f"获取聊天列表失败: {e}")
+            return {"status": "error", "message": f"获取聊天列表失败: {str(e)}"}
+    
+    def click_contact(self, contact_name: str = None, position: dict = None) -> Dict:
+        """点击联系人进入聊天
+        
+        Args:
+            contact_name: 联系人名称（需要先通过 get_chat_list 获取）
+            position: 点击位置 {"x": 100, "y": 200}
+        
+        Returns:
+            Dict: {"status": "success/error", "message": "..."}
+        """
+        try:
+            # 确保窗口就绪
+            w, error = self._ensure_window_ready()
+            if error:
+                return {"status": "error", "message": error}
+            
+            # 如果提供了位置，直接点击
+            if position and "x" in position and "y" in position:
+                pyautogui.click(position["x"], position["y"])
+                time.sleep(0.5)
+                return {"status": "success", "message": f"已点击位置 ({position['x']}, {position['y']})"}
+            
+            # 如果提供了联系人名称，先获取聊天列表查找位置
+            if contact_name:
+                result = self.get_chat_list()
+                if result["status"] != "success":
+                    return result
+                
+                for contact in result["data"]["contacts"]:
+                    if contact_name in contact["name"]:
+                        pyautogui.click(contact["position"]["x"], contact["position"]["y"])
+                        time.sleep(0.5)
+                        return {"status": "success", "message": f"已点击联系人: {contact['name']}"}
+                
+                return {"status": "error", "message": f"未找到联系人: {contact_name}"}
+            
+            return {"status": "error", "message": "请提供 contact_name 或 position 参数"}
+            
+        except Exception as e:
+            logger.error(f"点击联系人失败: {e}")
+            return {"status": "error", "message": f"点击联系人失败: {str(e)}"}
+    
+    def monitor_chat_changes(self, previous_state: dict = None, interval: float = 2.0) -> Dict:
+        """监控聊天列表变化
+        
+        Args:
+            previous_state: 上一次的状态（用于对比变化）
+            interval: 监控间隔（秒）
+        
+        Returns:
+            Dict: {
+                "status": "success",
+                "data": {
+                    "current_state": {...},  # 当前状态
+                    "changes": [  # 变化列表
+                        {
+                            "type": "new_message/position_change",
+                            "contact": "联系人名称",
+                            "details": "详细描述"
+                        }
+                    ],
+                    "unread_contacts": [  # 有未读消息的联系人
+                        {"name": "...", "position": {...}}
+                    ]
+                }
+            }
+        """
+        try:
+            # 获取当前聊天列表状态
+            current_result = self.get_chat_list()
+            if current_result["status"] != "success":
+                return current_result
+            
+            current_contacts = current_result["data"]["contacts"]
+            changes = []
+            unread_contacts = []
+            
+            # 如果有之前的状态，进行对比
+            if previous_state and "contacts" in previous_state:
+                prev_contacts = {c["name"]: c for c in previous_state["contacts"]}
+                
+                for i, contact in enumerate(current_contacts):
+                    name = contact["name"]
+                    prev_contact = prev_contacts.get(name)
+                    
+                    # 位置变化（新消息置顶）
+                    if prev_contact:
+                        prev_index = prev_contact.get("index", -1)
+                        if i != prev_index:
+                            changes.append({
+                                "type": "position_change",
+                                "contact": name,
+                                "details": f"位置从 {prev_index} 变为 {i}（可能有新消息）"
+                            })
+                        
+                        # 消息内容变化
+                        if contact["last_message"] != prev_contact.get("last_message", ""):
+                            changes.append({
+                                "type": "new_message",
+                                "contact": name,
+                                "details": f"新消息: {contact['last_message']}"
+                            })
+                            unread_contacts.append(contact)
+                    else:
+                        # 新出现的联系人（置顶的新消息）
+                        changes.append({
+                            "type": "new_contact",
+                            "contact": name,
+                            "details": f"新联系人出现在列表: {name}"
+                        })
+                        unread_contacts.append(contact)
+            
+            return {
+                "status": "success",
+                "data": {
+                    "current_state": {"contacts": current_contacts},
+                    "changes": changes,
+                    "unread_contacts": unread_contacts,
+                    "has_changes": len(changes) > 0
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"监控聊天变化失败: {e}")
+            return {"status": "error", "message": f"监控聊天变化失败: {str(e)}"}
+    
+    def auto_reply_to_contact(self, contact_name: str, message: str) -> Dict:
+        """自动回复指定联系人
+        
+        Args:
+            contact_name: 联系人名称
+            message: 回复内容
+        
+        Returns:
+            Dict: {"status": "success/error", "message": "..."}
+        """
+        try:
+            # 确保窗口就绪
+            w, error = self._ensure_window_ready()
+            if error:
+                return {"status": "error", "message": error}
+            
+            # 1. 点击联系人进入聊天
+            click_result = self.click_contact(contact_name=contact_name)
+            if click_result["status"] != "success":
+                return click_result
+            
+            time.sleep(0.5)
+            
+            # 2. 发送消息
+            success, err = self.send_message(message)
+            if success:
+                return {"status": "success", "message": f"已回复 {contact_name}: {message}"}
+            else:
+                return {"status": "error", "message": f"发送失败: {err}"}
+                
+        except Exception as e:
+            logger.error(f"自动回复失败: {e}")
+            return {"status": "error", "message": f"自动回复失败: {str(e)}"}
+    
+    def start_chat_monitor(self, reply_handler: callable = None, interval: float = 3.0, 
+                           max_loops: int = 100, auto_reply_message: str = None) -> Dict:
+        """启动聊天监控（阻塞式）
+        
+        Args:
+            reply_handler: 自定义回复处理函数 (contact_name, last_message) -> reply_message
+            interval: 检查间隔（秒）
+            max_loops: 最大循环次数
+            auto_reply_message: 自动回复的消息内容（如果不使用 reply_handler）
+        
+        Returns:
+            Dict: 监控结果统计
+        """
+        logger.info("启动聊天监控...")
+        
+        # 获取初始状态
+        initial_result = self.get_chat_list()
+        if initial_result["status"] != "success":
+            return initial_result
+        
+        previous_state = {"contacts": initial_result["data"]["contacts"]}
+        stats = {"loops": 0, "replies_sent": 0, "changes_detected": 0}
+        
+        try:
+            for loop in range(max_loops):
+                stats["loops"] = loop + 1
+                time.sleep(interval)
+                
+                # 检测变化
+                monitor_result = self.monitor_chat_changes(previous_state)
+                if monitor_result["status"] != "success":
+                    logger.warning(f"监控检查失败: {monitor_result['message']}")
+                    continue
+                
+                # 更新状态
+                previous_state = monitor_result["data"]["current_state"]
+                
+                # 处理变化
+                if monitor_result["data"]["has_changes"]:
+                    stats["changes_detected"] += 1
+                    
+                    for change in monitor_result["data"]["changes"]:
+                        logger.info(f"检测到变化: {change}")
+                    
+                    # 自动回复
+                    if reply_handler or auto_reply_message:
+                        for contact in monitor_result["data"]["unread_contacts"]:
+                            contact_name = contact["name"]
+                            last_message = contact["last_message"]
+                            
+                            # 确定回复内容
+                            if reply_handler:
+                                reply = reply_handler(contact_name, last_message)
+                            else:
+                                reply = auto_reply_message
+                            
+                            if reply:
+                                reply_result = self.auto_reply_to_contact(contact_name, reply)
+                                if reply_result["status"] == "success":
+                                    stats["replies_sent"] += 1
+                                    logger.info(f"已自动回复 {contact_name}: {reply}")
+                                else:
+                                    logger.warning(f"回复失败: {reply_result['message']}")
+                                
+                                time.sleep(1)  # 回复间隔
+            
+        except KeyboardInterrupt:
+            logger.info("监控被用户中断")
+        
+        return {
+            "status": "success",
+            "data": {
+                "stats": stats,
+                "message": f"监控结束，共检测 {stats['changes_detected']} 次变化，发送 {stats['replies_sent']} 条回复"
+            }
+        }
 
 
 # 全局管理器实例
@@ -734,6 +1145,30 @@ def get_page_context():
     """获取页面上下文（每次获取最新截图）"""
     return _manager.get_page_context()
 
+def get_chat_list(count=5):
+    """获取聊天列表"""
+    return _manager.get_chat_list(count=count)
+
+def click_contact(contact_name=None, position=None):
+    """点击联系人"""
+    return _manager.click_contact(contact_name=contact_name, position=position)
+
+def monitor_chat_changes(previous_state=None):
+    """监控聊天变化"""
+    return _manager.monitor_chat_changes(previous_state=previous_state)
+
+def auto_reply(contact_name, message):
+    """自动回复联系人"""
+    return _manager.auto_reply_to_contact(contact_name=contact_name, message=message)
+
+def start_monitor(interval=3.0, max_loops=100, auto_reply_message=None):
+    """启动聊天监控"""
+    return _manager.start_chat_monitor(
+        interval=interval, 
+        max_loops=max_loops, 
+        auto_reply_message=auto_reply_message
+    )
+
 
 if __name__ == "__main__":
     import argparse
@@ -780,6 +1215,27 @@ if __name__ == "__main__":
     p_send = subparsers.add_parser("send_message", help="发送消息")
     p_send.add_argument("--message", type=str, required=True, help="消息内容")
     
+    # get_chat_list
+    p_chat_list = subparsers.add_parser("get_chat_list", help="获取聊天列表")
+    p_chat_list.add_argument("--count", type=int, default=5, help="获取数量")
+    
+    # click_contact
+    p_click_contact = subparsers.add_parser("click_contact", help="点击联系人")
+    p_click_contact.add_argument("--name", type=str, default=None, help="联系人名称")
+    p_click_contact.add_argument("--x", type=int, default=None, help="点击X坐标")
+    p_click_contact.add_argument("--y", type=int, default=None, help="点击Y坐标")
+    
+    # auto_reply
+    p_auto_reply = subparsers.add_parser("auto_reply", help="自动回复联系人")
+    p_auto_reply.add_argument("--name", type=str, required=True, help="联系人名称")
+    p_auto_reply.add_argument("--message", type=str, required=True, help="回复内容")
+    
+    # start_monitor
+    p_monitor = subparsers.add_parser("start_monitor", help="启动聊天监控")
+    p_monitor.add_argument("--interval", type=float, default=3.0, help="检查间隔(秒)")
+    p_monitor.add_argument("--max_loops", type=int, default=100, help="最大循环次数")
+    p_monitor.add_argument("--auto_reply", type=str, default=None, help="自动回复内容")
+    
     args = parser.parse_args()
     
     if args.action is None:
@@ -808,5 +1264,18 @@ if __name__ == "__main__":
             result = {"status": "success", "message": "消息发送成功"}
         else:
             result = {"status": "error", "message": err}
+    elif args.action == "get_chat_list":
+        result = get_chat_list(args.count)
+    elif args.action == "click_contact":
+        position = {"x": args.x, "y": args.y} if args.x and args.y else None
+        result = click_contact(contact_name=args.name, position=position)
+    elif args.action == "auto_reply":
+        result = auto_reply(contact_name=args.name, message=args.message)
+    elif args.action == "start_monitor":
+        result = start_monitor(
+            interval=args.interval, 
+            max_loops=args.max_loops, 
+            auto_reply_message=args.auto_reply
+        )
     
     print(json.dumps(result, ensure_ascii=False, indent=2))

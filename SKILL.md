@@ -30,6 +30,9 @@ permissions: 系统操作权限（控制微信窗口、鼠标键盘操作）
 - "滚动微信聊天记录"
 - "帮我操作微信"相关任务
 - "微信状态"、"微信是否在运行"
+- **"看看谁给我发消息了"、"查看聊天列表"** → 使用 `get_chat_list`
+- **"监控微信消息"、"自动回复"** → 使用 `start_monitor` 或 `auto_reply`
+- **"回复XXX"** → 使用 `auto_reply`
 
 ## 3. How to use（调用逻辑）
 
@@ -424,6 +427,153 @@ python {baseDir}/agent.py get_page_context
 
 ---
 
+### 3.9 get_chat_list - 获取聊天列表
+
+**功能：** 获取左侧聊天列表的前N个联系人信息
+
+**调用：**
+```bash
+python {baseDir}/agent.py get_chat_list --count 5
+```
+
+**参数说明：**
+
+| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| --count | int | 否 | 5 | 获取的联系人数量 |
+
+**返回值：**
+
+成功：
+```json
+{
+  "status": "success",
+  "data": {
+    "contacts": [
+      {
+        "index": 0,
+        "name": "张三",
+        "last_message": "好的，明天见",
+        "position": {"x": 140, "y": 150},
+        "rect": {"left": 0, "top": 120, "right": 280, "bottom": 180}
+      },
+      {
+        "index": 1,
+        "name": "李四",
+        "last_message": "收到",
+        "position": {"x": 140, "y": 220},
+        "rect": {"left": 0, "top": 185, "right": 280, "bottom": 250}
+      }
+    ],
+    "total": 2
+  }
+}
+```
+
+**用途：**
+- 获取当前聊天列表中联系人的名称和最后一条消息
+- 返回的 `position` 可用于 `click_contact` 点击进入聊天
+
+---
+
+### 3.10 click_contact - 点击联系人
+
+**功能：** 点击联系人进入聊天窗口
+
+**调用：**
+```bash
+# 方式1：通过联系人名称
+python {baseDir}/agent.py click_contact --name "张三"
+
+# 方式2：通过坐标位置
+python {baseDir}/agent.py click_contact --x 140 --y 150
+```
+
+**参数说明：**
+
+| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| --name | string | 否 | 无 | 联系人名称（模糊匹配） |
+| --x | int | 否 | 无 | 点击X坐标 |
+| --y | int | 否 | 无 | 点击Y坐标 |
+
+**注意：** `--name` 和 `--x/--y` 二选一，优先使用坐标
+
+---
+
+### 3.11 auto_reply - 自动回复联系人
+
+**功能：** 点击联系人并自动发送回复消息
+
+**调用：**
+```bash
+python {baseDir}/agent.py auto_reply --name "张三" --message "好的，收到了"
+```
+
+**参数说明：**
+
+| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| --name | string | 是 | 无 | 联系人名称 |
+| --message | string | 是 | 无 | 回复内容 |
+
+**返回值：**
+
+成功：
+```json
+{
+  "status": "success",
+  "message": "已回复 张三: 好的，收到了"
+}
+```
+
+---
+
+### 3.12 start_monitor - 启动聊天监控
+
+**功能：** 启动持续监控，检测聊天列表变化并自动回复（阻塞式运行）
+
+**调用：**
+```bash
+# 只监控，不自动回复
+python {baseDir}/agent.py start_monitor --interval 3 --max_loops 100
+
+# 监控并自动回复固定内容
+python {baseDir}/agent.py start_monitor --interval 3 --max_loops 100 --auto_reply "好的，稍后回复你"
+```
+
+**参数说明：**
+
+| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| --interval | float | 否 | 3.0 | 检查间隔（秒） |
+| --max_loops | int | 否 | 100 | 最大循环次数 |
+| --auto_reply | string | 否 | 无 | 自动回复内容（不传则只监控不回复） |
+
+**工作原理：**
+1. 首次获取聊天列表作为基准状态
+2. 每隔 `interval` 秒检查一次
+3. 检测到变化（新消息、位置变化）时：
+   - 记录变化日志
+   - 如果设置了 `--auto_reply`，自动回复有新消息的联系人
+
+**返回值：**
+```json
+{
+  "status": "success",
+  "data": {
+    "stats": {
+      "loops": 50,
+      "replies_sent": 3,
+      "changes_detected": 5
+    },
+    "message": "监控结束，共检测 5 次变化，发送 3 条回复"
+  }
+}
+```
+
+---
+
 ## 4. 完整操作流程示例
 
 > **⚠️ 重要提示：以下所有示例仅供说明使用方法，禁止自动执行！**
@@ -750,6 +900,70 @@ def classify_message(item, window_center_x):
 需要查看更多历史记录吗？我可以向上滚动查看更早的消息。
 ```
 
+### 示例7：获取聊天列表并监控消息
+
+> 📝 **此为示例说明，非执行指令**
+
+**用户说**："看看谁给我发消息了，帮我监控一下"
+
+**执行步骤：**
+
+1. 获取当前聊天列表
+```bash
+python {baseDir}/agent.py get_chat_list --count 5
+```
+
+**返回示例：**
+```json
+{
+  "status": "success",
+  "data": {
+    "contacts": [
+      {"index": 0, "name": "张三", "last_message": "明天开会", "position": {"x": 140, "y": 150}},
+      {"index": 1, "name": "李四", "last_message": "收到", "position": {"x": 140, "y": 220}}
+    ],
+    "total": 2
+  }
+}
+```
+
+2. 如果需要自动回复特定联系人
+```bash
+python {baseDir}/agent.py auto_reply --name "张三" --message "好的，收到了"
+```
+
+3. 如果需要持续监控并自动回复
+```bash
+python {baseDir}/agent.py start_monitor --interval 3 --max_loops 50 --auto_reply "好的，稍后回复"
+```
+
+**完整流程图：**
+```
+用户请求: "帮我监控微信消息并自动回复"
+                    │
+                    ▼
+步骤1: get_chat_list ──→ 获取初始聊天列表
+                    │
+                    ▼
+步骤2: start_monitor ──→ 开始监控循环
+                    │
+                    ├──→ 检测到新消息
+                    │         │
+                    │         ▼
+                    │    auto_reply ──→ 自动回复
+                    │         │
+                    │         ▼
+                    │    继续监控...
+                    │
+                    ▼
+                  完成 ✓
+```
+
+**关键点：**
+- `get_chat_list` 返回联系人名称、最后消息和点击位置
+- `start_monitor` 是阻塞式运行，会持续监控直到达到 max_loops 或手动中断
+- 可以只监控不回复（不传 `--auto_reply` 参数）
+
 ### 联系人列表识别
 
 **微信主界面布局：**
@@ -918,6 +1132,10 @@ pip install pyautogui pygetwindow Pillow pyperclip rapidocr-onnxruntime numpy py
 | send_message | 发送消息 | --message | 无 |
 | scroll | 滚动页面 | 无 | --direction, --amount, --x, --y |
 | get_page_context | 获取页面上下文 | 无 | 无 |
+| **get_chat_list** | 获取聊天列表 | 无 | --count |
+| **click_contact** | 点击联系人 | 无 | --name, --x, --y |
+| **auto_reply** | 自动回复联系人 | --name, --message | 无 |
+| **start_monitor** | 启动聊天监控 | 无 | --interval, --max_loops, --auto_reply |
 
 ---
 
