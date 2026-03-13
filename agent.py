@@ -1976,14 +1976,15 @@ root.mainloop()
             pass
         
         elapsed = time.time() - getattr(self, '_step_start_time', time.time())
+        stats = getattr(self, '_step_stats', {"checks": 0, "replies_sent": 0})
         
         return {
             "status": "success",
             "message": "监控已停止",
             "data": {
                 "stats": {
-                    "checks": self._step_stats.get("checks", 0),
-                    "replies_sent": self._step_stats.get("replies_sent", 0),
+                    "checks": stats.get("checks", 0),
+                    "replies_sent": stats.get("replies_sent", 0),
                     "elapsed_time": round(elapsed, 1)
                 },
                 "pending_messages_count": len(self._new_messages_queue)
