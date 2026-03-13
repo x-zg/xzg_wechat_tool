@@ -88,6 +88,7 @@ class WeChatManager:
         """在截图区域显示闪烁效果
         
         使用 tkinter 创建一个半透明窗口，显示在截图区域，持续指定时间后消失。
+        采用非阻塞方式，支持在后台线程中调用。
         
         Args:
             left, top, right, bottom: 截图区域的屏幕坐标
@@ -123,12 +124,22 @@ class WeChatManager:
             canvas.create_text(width//2, height//2, text="📸 截图中...", 
                               font=('Arial', 16, 'bold'), fill='#000000')
             
-            # 显示窗口并更新
+            # 使用非阻塞方式显示窗口
             root.update()
             
-            # 等待指定时间
-            root.after(int(duration * 1000), root.destroy)
-            root.mainloop()
+            # 使用 time.sleep + root.update 替代 mainloop（支持后台线程）
+            start_time = time.time()
+            while time.time() - start_time < duration:
+                # 检查是否收到停止信号
+                if self._stop_event.is_set():
+                    break
+                try:
+                    root.update()
+                    time.sleep(0.01)  # 10ms 更新间隔
+                except tk.TclError:
+                    break  # 窗口已被关闭
+
+            root.destroy()
             
         except Exception as e:
             logger.warning(f"闪烁显示失败: {e}")
@@ -810,14 +821,14 @@ class WeChatManager:
     
     # ==================== 聊天列表监控功能 ====================
     
-    def get_chat_list(self, count: int = 5, show_flash: bool = False) -> Dict:
+    def get_chat_list(self, count: int = 5, show_flash: bool = True) -> Dict:
         """获取左侧聊天列表的前N个联系人
         
         通过 OCR 识别左侧聊天列表区域，提取联系人信息。
         
         Args:
             count: 获取的联系人数量（默认5个）
-            show_flash: 是否显示截图闪烁提示（默认关闭，避免阻塞后台线程）
+            show_flash: 是否显示截图闪烁提示（默认开启）
         
         Returns:
             Dict: {
