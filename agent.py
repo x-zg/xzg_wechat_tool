@@ -26,6 +26,7 @@ import base64
 import time
 import logging
 import signal
+import subprocess
 import psutil  # 用于跨进程管理
 import threading
 from typing import Any, Dict, Optional, Tuple
