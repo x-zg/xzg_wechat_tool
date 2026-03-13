@@ -41,6 +41,10 @@ import win32con
 import win32api
 import win32process
 import numpy as np
+import ctypes
+
+# 获取 user32 API
+user32 = ctypes.windll.user32
 
 # ============== 配置日志输出编码为 UTF-8 ==============
 # 创建 StreamHandler，确保使用 UTF-8 编码
@@ -69,9 +73,18 @@ class WeChatManager:
     
     def _find_gw_window(self) -> Optional[Any]:
         """使用 pygetwindow 查找微信窗口"""
+        # 微信窗口标题通常是：微信、WeChat、Weixin，或者以这些开头的标题
+        # 排除包含 "agent.py" 或当前脚本路径的窗口
+        script_name = os.path.basename(__file__).lower()
+        
         for keyword in ["微信", "WeChat", "Weixin"]:
             windows = gw.getWindowsWithTitle(keyword)
             for w in windows:
+                title_lower = w.title.lower()
+                # 排除 IDE/编辑器窗口（包含脚本名或路径）
+                if script_name in title_lower or "agent.py" in title_lower:
+                    logger.debug(f"跳过 IDE 窗口: title={w.title}")
+                    continue
                 # 放宽窗口尺寸限制：宽度 > 200 且高度 > 200
                 if w.width > 200 and w.height > 200:
                     logger.debug(f"找到微信窗口: title={w.title}, size=({w.width}x{w.height})")
@@ -240,14 +253,17 @@ class WeChatManager:
             
             logger.info(f"  线程信息: 当前={current_thread}, 前台={foreground_thread}, 目标={target_thread}")
             
-            # 附加线程输入
+            # 附加线程输入（使用 ctypes 调用 AttachThreadInput）
             attach_threads = []
-            if current_thread != target_thread:
-                win32gui.AttachThreadInput(current_thread, target_thread, True)
-                attach_threads.append((current_thread, target_thread))
-            if foreground_thread != target_thread and foreground_thread != current_thread:
-                win32gui.AttachThreadInput(foreground_thread, target_thread, True)
-                attach_threads.append((foreground_thread, target_thread))
+            try:
+                if current_thread != target_thread:
+                    user32.AttachThreadInput(current_thread, target_thread, True)
+                    attach_threads.append((current_thread, target_thread))
+                if foreground_thread != target_thread and foreground_thread != current_thread:
+                    user32.AttachThreadInput(foreground_thread, target_thread, True)
+                    attach_threads.append((foreground_thread, target_thread))
+            except Exception as e:
+                logger.warning(f"  AttachThreadInput 失败: {e}")
             
             # ===== 方法3: 设置窗口位置和状态 =====
             # 先显示窗口
@@ -267,7 +283,7 @@ class WeChatManager:
             # 解除线程附加
             for t1, t2 in attach_threads:
                 try:
-                    win32gui.AttachThreadInput(t1, t2, False)
+                    user32.AttachThreadInput(t1, t2, False)
                 except Exception:
                     pass
             
