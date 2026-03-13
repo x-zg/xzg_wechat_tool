@@ -73,6 +73,8 @@ class WeChatManager:
     
     # PID 文件路径（用于跨进程停止监控）
     MONITOR_PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".monitor.pid")
+    # 停止信号文件（用于跨进程停止监控，避免权限问题）
+    STOP_SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".monitor.stop")
 
     def __init__(self):
         self._app = None
@@ -1360,6 +1362,13 @@ class WeChatManager:
         self._monitor_result = None
         self._stop_event.clear()  # 清除停止事件
         
+        # 清除停止信号文件
+        try:
+            if os.path.exists(self.STOP_SIGNAL_FILE):
+                os.remove(self.STOP_SIGNAL_FILE)
+        except Exception:
+            pass
+        
         # 定义监控线程函数
         def _monitor_thread_func():
             start_time = time.time()
@@ -1379,8 +1388,13 @@ class WeChatManager:
             
             try:
                 for loop in range(max_loops):
-                    # 检查是否被停止
+                    # 检查是否被停止（内存标志）
                     if not self._monitor_running or self._stop_event.is_set():
+                        break
+                    
+                    # 检查停止信号文件（跨进程停止）
+                    if os.path.exists(self.STOP_SIGNAL_FILE):
+                        logger.info("检测到停止信号文件，停止监控")
                         break
                     
                     # 检查超时
@@ -1448,6 +1462,13 @@ class WeChatManager:
                 except Exception:
                     pass
                 
+                # 清理停止信号文件
+                try:
+                    if os.path.exists(self.STOP_SIGNAL_FILE):
+                        os.remove(self.STOP_SIGNAL_FILE)
+                except Exception:
+                    pass
+                
                 self._monitor_running = False
                 logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复")
                 
@@ -1478,18 +1499,27 @@ class WeChatManager:
         """停止聊天监控（支持线程内和跨进程停止）
         
         工作原理：
-        1. 先尝试停止当前进程内的后台线程
-        2. 清理 PID 文件
+        1. 创建停止信号文件（跨进程通信）
+        2. 设置内部停止标志
+        3. 清理 PID 文件
         """
         logger.info("收到停止监控请求...")
         
-        # 方法1：停止当前进程内的后台线程
+        # 创建停止信号文件（跨进程停止）
+        try:
+            with open(self.STOP_SIGNAL_FILE, 'w') as f:
+                f.write(str(time.time()))
+            logger.info("已创建停止信号文件")
+        except Exception as e:
+            logger.warning(f"创建停止信号文件失败: {e}")
+        
+        # 停止当前进程内的后台线程
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_running = False
-            self._stop_event.set()  # 发送停止信号，立即中断 Event.wait()
+            self._stop_event.set()
             logger.info("已发送停止信号")
         
-        # 方法2：清理 PID 文件
+        # 清理 PID 文件
         try:
             if os.path.exists(self.MONITOR_PID_FILE):
                 os.remove(self.MONITOR_PID_FILE)
@@ -1594,8 +1624,8 @@ def check_new_messages():
     """检查是否有新消息（供模型自定义回复使用）"""
     return _manager.check_new_messages()
 
-def start_monitor(interval=10.0, duration=60, auto_reply_message=None):
-    """启动聊天监控（默认10秒间隔，60秒时长）"""
+def start_monitor(interval=5.0, duration=60, auto_reply_message=None):
+    """启动聊天监控（默认5秒间隔，60秒时长）"""
     # 根据 duration 计算 max_loops
     max_loops = int(duration / interval) + 1
     return _manager.start_chat_monitor(
@@ -1680,7 +1710,7 @@ if __name__ == "__main__":
     
     # start_monitor
     p_monitor = subparsers.add_parser("start_monitor", help="启动聊天监控")
-    p_monitor.add_argument("--interval", type=float, default=10.0, help="检查间隔(秒), 默认10秒")
+    p_monitor.add_argument("--interval", type=float, default=5.0, help="检查间隔(秒), 默认5秒")
     p_monitor.add_argument("--duration", type=int, default=60, help="监控时长(秒), 默认60秒")
     p_monitor.add_argument("--auto_reply", type=str, default=None, help="自动回复内容")
     
