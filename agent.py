@@ -976,6 +976,9 @@ class WeChatManager:
                         # 去掉前缀，保留实际消息内容
                         message_text = message_text[2:].strip()
                 
+                # 调试日志：打印识别到的联系人信息
+                logger.info(f"  联系人[{i}]: 名称={name_text}, 消息={message_text}, is_from_me={is_from_me}")
+                
                 # 计算点击位置（转换回屏幕坐标）
                 if group and hasattr(self, '_window_rect'):
                     avg_y = sum(l["y"] for l in group) / len(group)
@@ -1086,6 +1089,10 @@ class WeChatManager:
             changes = []
             need_reply_contacts = []  # 真正需要回复的联系人
             
+            # 调试：打印当前识别到的所有联系人
+            logger.info(f"当前识别到的联系人: {[c['name'] for c in current_contacts]}")
+            logger.info(f"已保存的联系人状态: {list(self._contact_states.keys())}")
+            
             # 初始化所有联系人的状态（首次运行）
             for contact in current_contacts:
                 name = contact["name"]
@@ -1095,7 +1102,7 @@ class WeChatManager:
                         "is_from_me": contact.get("is_from_me", False),
                         "replied": True  # 首次见到，标记为已回复（不自动回复历史消息）
                     }
-                    logger.info(f"  初始化联系人状态: {name} -> 已知消息，标记为已回复")
+                    logger.info(f"  初始化联系人状态: {name} -> 消息='{contact.get('last_message', '')}', 标记为已回复")
             
             # 对比变化
             for i, contact in enumerate(current_contacts):
@@ -1107,8 +1114,12 @@ class WeChatManager:
                 saved_is_from_me = saved_state.get("is_from_me", False)
                 already_replied = saved_state.get("replied", False)
                 
+                # 调试日志：打印消息对比（INFO 级别便于查看）
+                logger.info(f"  对比[{i}] {name}: 当前='{current_message}'(me={current_is_from_me}) vs 已保存='{saved_message}'(me={saved_is_from_me})")
+                
                 # 检测消息是否变化
                 if current_message != saved_message or current_is_from_me != saved_is_from_me:
+                    logger.info(f"  🔍 检测到 {name} 消息变化: '{saved_message}' -> '{current_message}'")
                     # 更新保存的消息
                     self._contact_states[name]["last_message"] = current_message
                     self._contact_states[name]["is_from_me"] = current_is_from_me
