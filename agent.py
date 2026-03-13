@@ -84,6 +84,8 @@ class WeChatManager:
         self._monitor_thread = None  # 监控线程
         self._monitor_result = None  # 监控结果
         self._stop_event = threading.Event()  # 用于立即停止监控的事件
+        self._new_messages_queue = []  # 新消息队列（供模型查询）
+        self._queue_lock = threading.Lock()  # 队列锁
     
     def _flash_capture_area(self, left: int, top: int, right: int, bottom: int, duration: float = 0.5):
         """显示截图闪烁效果（创建独立进程显示图片，自动关闭）
@@ -1466,6 +1468,20 @@ root.mainloop()
                     
                     # 智能回复
                     need_reply = monitor_result["data"]["need_reply_contacts"]
+                    
+                    # 将新消息添加到队列（无论是否自动回复，都记录供模型查询）
+                    if need_reply:
+                        with self._queue_lock:
+                            for contact in need_reply:
+                                self._new_messages_queue.append({
+                                    "timestamp": time.time(),
+                                    "contact": contact["name"],
+                                    "message": contact["message"],
+                                    "auto_replied": False
+                                })
+                        logger.info(f"新消息已加入队列: {len(need_reply)} 条")
+                    
+                    # 自动回复（如果设置了消息）
                     if need_reply and auto_reply_message:
                         for contact in need_reply:
                             if os.path.exists(self.STOP_SIGNAL_FILE) or not self._monitor_running:
@@ -1478,9 +1494,15 @@ root.mainloop()
                                 stats["replies_sent"] += 1
                                 if contact_name in self._contact_states:
                                     self._contact_states[contact_name]["replied"] = True
+                                # 更新队列中的自动回复状态
+                                with self._queue_lock:
+                                    for msg in self._new_messages_queue:
+                                        if msg["contact"] == contact_name and not msg["auto_replied"]:
+                                            msg["auto_replied"] = True
+                                            break
                                 logger.info(f"已回复 {contact_name}: {auto_reply_message}")
                             
-                            time.sleep(1)
+                            time.sleep(0.5)  # 缩短等待
                     
                     # 分段等待下次检查
                     for _ in range(int(interval * 10)):
@@ -1511,10 +1533,11 @@ root.mainloop()
                     "status": "success",
                     "data": {
                         "stats": stats,
-                        "message": f"监控结束，发送 {stats['replies_sent']} 条回复，原因: {stats['stopped_by']}"
+                        "message": f"监控结束，发送 {stats['replies_sent']} 条回复，原因: {stats['stopped_by']}",
+                        "pending_messages_count": len(self._new_messages_queue)
                     }
                 }
-                logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复")
+                logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复, 剩余未处理消息: {len(self._new_messages_queue)}")
         
         # 启动后台线程
         self._monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
@@ -1598,7 +1621,57 @@ root.mainloop()
         if self._monitor_result:
             result["data"]["last_result"] = self._monitor_result
         
+        # 包含新消息队列数量
+        with self._queue_lock:
+            result["data"]["pending_messages"] = len(self._new_messages_queue)
+        
         return result
+    
+    def get_pending_messages(self, clear_after_read: bool = True) -> Dict:
+        """获取待处理的新消息队列
+        
+        此方法供模型在监控运行时查询新消息。
+        监控会将检测到的新消息加入队列，模型可以定期调用此方法获取。
+        
+        Args:
+            clear_after_read: 读取后是否清空队列，默认 True
+        
+        Returns:
+            Dict: {
+                "status": "success",
+                "data": {
+                    "has_new_messages": True/False,
+                    "messages": [...],
+                    "count": 0
+                }
+            }
+        """
+        with self._queue_lock:
+            messages = self._new_messages_queue.copy()
+            if clear_after_read:
+                self._new_messages_queue.clear()
+        
+        return {
+            "status": "success",
+            "data": {
+                "has_new_messages": len(messages) > 0,
+                "messages": messages,
+                "count": len(messages),
+                "monitor_running": self._monitor_running
+            }
+        }
+    
+    def clear_message_queue(self) -> Dict:
+        """清空新消息队列"""
+        with self._queue_lock:
+            count = len(self._new_messages_queue)
+            self._new_messages_queue.clear()
+        
+        return {
+            "status": "success",
+            "message": f"已清空 {count} 条消息",
+            "data": {"cleared_count": count}
+        }
     
     def get_contact_states(self) -> Dict:
         """获取当前所有联系人的状态"""
@@ -1711,6 +1784,21 @@ def get_monitor_status():
     """获取监控状态（检查监控是否在运行）"""
     return _manager.get_monitor_status()
 
+def get_pending_messages(clear_after_read=True):
+    """获取监控期间检测到的新消息队列
+    
+    监控运行时会将新消息加入队列，调用此方法获取并清空队列。
+    适用于监控运行期间模型主动查询新消息。
+    
+    Args:
+        clear_after_read: 读取后是否清空队列，默认 True
+    """
+    return _manager.get_pending_messages(clear_after_read=clear_after_read)
+
+def clear_message_queue():
+    """清空新消息队列"""
+    return _manager.clear_message_queue()
+
 
 if __name__ == "__main__":
     import argparse
@@ -1788,6 +1876,16 @@ if __name__ == "__main__":
     
     # stop_monitor
     subparsers.add_parser("stop_monitor", help="停止聊天监控")
+    
+    # get_monitor_status - 获取监控状态
+    subparsers.add_parser("get_monitor_status", help="获取监控状态")
+    
+    # get_pending_messages - 获取待处理消息
+    p_pending = subparsers.add_parser("get_pending_messages", help="获取监控期间的新消息队列")
+    p_pending.add_argument("--keep", action="store_true", help="读取后不清空队列")
+    
+    # clear_message_queue - 清空消息队列
+    subparsers.add_parser("clear_message_queue", help="清空新消息队列")
     
     # test_monitor - 测试监控（单次检测，不阻塞）
     subparsers.add_parser("test_monitor", help="测试监控（单次检测）")
@@ -1869,6 +1967,12 @@ if __name__ == "__main__":
                 result = {"status": "success", "message": "监控已停止"}
     elif args.action == "stop_monitor":
         result = stop_monitor()
+    elif args.action == "get_monitor_status":
+        result = get_monitor_status()
+    elif args.action == "get_pending_messages":
+        result = get_pending_messages(clear_after_read=not args.keep)
+    elif args.action == "clear_message_queue":
+        result = clear_message_queue()
     elif args.action == "test_monitor":
         # 测试模式：单次检测，显示详细信息
         print("===== 测试监控 =====")
