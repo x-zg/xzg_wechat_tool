@@ -1020,7 +1020,7 @@ class WeChatManager:
             position: 点击位置 {"x": 100, "y": 200}
 
         Returns:
-            Dict: {"status": "success/error", "message": "..."}
+            Dict: {"status": "success/error", "message": "...", "matched_name": "匹配到的联系人名称"}
         """
         try:
             # 确保窗口就绪
@@ -1041,14 +1041,32 @@ class WeChatManager:
                 if result["status"] != "success":
                     return result
 
+                # ===== 改进的匹配逻辑：精确匹配优先，模糊匹配备选 =====
+                matched_contact = None
+                
+                # 优先：精确匹配
                 for contact in result["data"]["contacts"]:
-                    if contact_name in contact["name"]:
-                        click_x = contact["position"]["x"]
-                        click_y = contact["position"]["y"]
-                        contact_display_name = contact["name"]
+                    if contact["name"] == contact_name:
+                        matched_contact = contact
                         break
-
-                if click_x is None:
+                
+                # 备选：模糊匹配（但要求名称包含关系是双向的或目标较短）
+                if not matched_contact:
+                    for contact in result["data"]["contacts"]:
+                        # 模糊匹配：联系人名称包含目标，或目标包含联系人名称
+                        if contact_name in contact["name"] or contact["name"] in contact_name:
+                            # 额外检查：避免误匹配（如"小许"匹配到"小许2"）
+                            # 只有当目标名称较短时才允许包含匹配
+                            if len(contact_name) <= len(contact["name"]):
+                                matched_contact = contact
+                                logger.debug(f"模糊匹配: '{contact_name}' -> '{contact['name']}'")
+                                break
+                
+                if matched_contact:
+                    click_x = matched_contact["position"]["x"]
+                    click_y = matched_contact["position"]["y"]
+                    contact_display_name = matched_contact["name"]
+                else:
                     return {"status": "error", "message": f"未找到联系人: {contact_name}"}
             else:
                 return {"status": "error", "message": "请提供 contact_name 或 position 参数"}
@@ -1069,10 +1087,11 @@ class WeChatManager:
                 # 验证聊天窗口是否打开
                 if self._verify_chat_window_open():
                     # 窗口已打开，成功
-                    if contact_display_name:
-                        return {"status": "success", "message": f"已进入与 {contact_display_name} 的聊天窗口"}
-                    else:
-                        return {"status": "success", "message": f"已点击位置 ({click_x}, {click_y})"}
+                    return {
+                        "status": "success", 
+                        "message": f"已进入与 {contact_display_name} 的聊天窗口",
+                        "matched_name": contact_display_name  # 返回匹配到的名称
+                    }
                 else:
                     # 窗口未打开，可能是因为之前已经在这个窗口，点击导致关闭了
                     # 如果不是最后一次尝试，继续点击重新打开
@@ -1108,16 +1127,41 @@ class WeChatManager:
             if click_result["status"] != "success":
                 return click_result
 
+            # 获取实际匹配到的联系人名称
+            matched_name = click_result.get("matched_name", contact_name)
+
             time.sleep(0.3)
 
             # 2. 发送消息
             success, err = self.send_message(message)
             if success:
-                # 标记为已回复
-                if contact_name in self._contact_states:
-                    self._contact_states[contact_name]["replied"] = True
+                # ===== 关键：发送成功后，立即更新所有"我发的消息"的联系人状态 =====
+                # 这样可以防止发错人后，错误目标被检测为"有新消息"
+                time.sleep(0.5)  # 等待微信更新聊天列表
+                
+                # 重新获取聊天列表
+                list_result = self.get_chat_list()
+                if list_result["status"] == "success":
+                    for contact in list_result["data"]["contacts"]:
+                        name = contact["name"]
+                        # 如果最后一条消息是我发的，标记为已回复
+                        if contact.get("is_from_me", False):
+                            if name in self._contact_states:
+                                self._contact_states[name]["replied"] = True
+                                self._contact_states[name]["last_message"] = contact.get("last_message", "")
+                                self._contact_states[name]["is_from_me"] = True
+                                logger.debug(f"已标记 {name} 为已回复（我发的消息）")
+                            else:
+                                # 如果联系人不在状态中，添加并标记为已回复
+                                self._contact_states[name] = {
+                                    "last_message": contact.get("last_message", ""),
+                                    "is_from_me": True,
+                                    "replied": True
+                                }
+                                logger.debug(f"添加并标记 {name} 为已回复")
                     self._save_states()  # 保存状态
-                return {"status": "success", "message": f"已回复 {contact_name}: {message}"}
+                
+                return {"status": "success", "message": f"已回复 {matched_name}: {message}"}
             else:
                 return {"status": "error", "message": f"发送失败: {err}"}
 
