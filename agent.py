@@ -49,9 +49,8 @@ import ctypes
 # 获取 user32 API
 user32 = ctypes.windll.user32
 
-# 全局变量：是否显示截图闪烁（默认开启）
-FLASH_CAPTURE_ENABLED = True
-FLASH_DURATION = 0.5  # 闪烁持续时间（秒）
+# 截图闪烁显示时间（秒）
+FLASH_DURATION = 0.5
 
 # ============== 配置日志输出编码为 UTF-8 ==============
 # 创建 StreamHandler，确保使用 UTF-8 编码
@@ -87,61 +86,46 @@ class WeChatManager:
         self._stop_event = threading.Event()  # 用于立即停止监控的事件
     
     def _flash_capture_area(self, left: int, top: int, right: int, bottom: int, duration: float = 0.5):
-        """在截图区域显示闪烁效果
+        """显示截图闪烁效果（用系统图片查看器打开截图）
         
-        使用 tkinter 创建一个半透明窗口，显示在截图区域，持续指定时间后消失。
-        采用非阻塞方式，支持在后台线程中调用。
+        简单可靠的方式：保存截图到临时文件，用系统默认查看器打开。
+        相比 tkinter 方式，避免了后台线程不稳定的问题。
         
         Args:
-            left, top, right, bottom: 截图区域的屏幕坐标
-            duration: 闪烁持续时间（秒），默认0.5秒
+            left, top, right, bottom: 截图区域的屏幕坐标（未使用，保留兼容性）
+            duration: 显示时间（秒），默认0.5秒
         """
+        import tempfile
+        import subprocess
+        
         try:
-            import tkinter as tk
+            # 先截取当前微信窗口
+            img = self.capture(show_flash=False)
+            if not img:
+                logger.warning("闪烁显示失败: 无法截图")
+                return
             
-            root = tk.Tk()
-            root.overrideredirect(True)  # 无边框
-            root.attributes('-topmost', True)  # 置顶
-            root.attributes('-alpha', 0.3)  # 半透明
+            # 保存到临时文件
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, "wechat_screenshot_flash.png")
+            img.save(temp_path)
             
-            width = right - left
-            height = bottom - top
+            # 用系统默认图片查看器打开
+            if sys.platform == 'win32':
+                # Windows: 使用系统默认程序打开
+                subprocess.Popen(['start', '', temp_path], shell=True)
+            else:
+                # macOS / Linux
+                subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', temp_path])
             
-            # 设置窗口位置和大小
-            root.geometry(f"{width}x{height}+{left}+{top}")
+            # 等待指定时间
+            time.sleep(duration)
             
-            # 设置背景色为亮绿色（醒目）
-            root.configure(bg='#00FF00')
-            
-            # 添加边框效果
-            canvas = tk.Canvas(root, width=width, height=height, bg='#00FF00', highlightthickness=0)
-            canvas.pack(fill=tk.BOTH, expand=True)
-            
-            # 绘制边框
-            border_width = 3
-            canvas.create_rectangle(border_width, border_width, width-border_width, height-border_width, 
-                                   outline='#FF0000', width=border_width)
-            
-            # 在中心显示文字
-            canvas.create_text(width//2, height//2, text="📸 截图中...", 
-                              font=('Arial', 16, 'bold'), fill='#000000')
-            
-            # 使用非阻塞方式显示窗口
-            root.update()
-            
-            # 使用 time.sleep + root.update 替代 mainloop（支持后台线程）
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                # 检查是否收到停止信号
-                if self._stop_event.is_set():
-                    break
-                try:
-                    root.update()
-                    time.sleep(0.01)  # 10ms 更新间隔
-                except tk.TclError:
-                    break  # 窗口已被关闭
-
-            root.destroy()
+            # 关闭查看器（Windows 上关闭"照片"应用）
+            if sys.platform == 'win32':
+                # 尝试关闭照片查看器
+                subprocess.Popen(['taskkill', '/F', '/IM', 'PhotosApp.exe'], 
+                               shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
         except Exception as e:
             logger.warning(f"闪烁显示失败: {e}")
@@ -411,14 +395,13 @@ class WeChatManager:
             logger.error(f"获取窗口位置失败: {e}")
             return None
     
-    def capture(self, show_flash: bool = None) -> Optional[Image.Image]:
+    def capture(self, show_flash: bool = False) -> Optional[Image.Image]:
         """截取微信窗口（使用 win32 API）
         
         Args:
-            show_flash: 是否显示截图闪烁提示，None 时使用全局设置 FLASH_CAPTURE_ENABLED
+            show_flash: 是否显示截图闪烁提示（用系统图片查看器打开截图0.5秒）
         """
-        # 确定是否显示闪烁（参数优先于全局设置）
-        should_flash = FLASH_CAPTURE_ENABLED if show_flash is None else show_flash
+        should_flash = show_flash
         
         # 先激活窗口
         w = self.get_main_window(force_refresh=True, activate_first=True)
@@ -920,6 +903,12 @@ class WeChatManager:
             # 按 Y 坐标排序并分组
             lines.sort(key=lambda l: l["y"])
             
+            # ===== 调试输出：显示 OCR 识别到的原始文本 =====
+            logger.info(f"===== OCR 原始识别结果 =====")
+            for i, line in enumerate(lines):
+                logger.info(f"  [{i}] 文本: '{line['text']}' @ y={line['y']:.1f}")
+            logger.info(f"============================")
+            
             # 分组：相邻的行（Y 差距小于 30）属于同一个联系人
             groups = []
             current_group = []
@@ -958,13 +947,33 @@ class WeChatManager:
                 if len(group) > 1:
                     message_text = group[-1]["text"].strip()
                 
-                # 判断最后一条消息是否是我发的（微信显示"我:"前缀）
+                # ===== 改进的 is_from_me 判断 =====
+                # 微信聊天列表可能显示的格式：
+                # 1. "我: 消息内容" / "我：消息内容"（中文/英文冒号）
+                # 2. "[我] 消息内容"（部分版本）
+                # 3. "我 消息内容"（无冒号，少见）
+                # 注意：如果消息内容本身包含"我"字（如"我们"），不要误判
                 if message_text:
-                    # 检测 "我:" 或 "我：" 前缀（中文冒号或英文冒号）
-                    if message_text.startswith("我:") or message_text.startswith("我："):
-                        is_from_me = True
-                        # 去掉前缀，保留实际消息内容
-                        message_text = message_text[2:].strip()
+                    # 方法1：检测标准前缀
+                    prefixes = ["我:", "我：", "[我]", "【我】"]
+                    for prefix in prefixes:
+                        if message_text.startswith(prefix):
+                            is_from_me = True
+                            message_text = message_text[len(prefix):].strip()
+                            logger.debug(f"检测到 '{prefix}' 前缀，is_from_me=True")
+                            break
+                    
+                    # 方法2：如果名称和消息中的发送者名称一致，可能是群消息中我发的
+                    # 例如：群名"工作群"，消息显示"我: 好的" -> is_from_me=True
+                    # 但这种情况上面已经处理了
+                    
+                    # 方法3：检测消息开头是否包含联系人名称（群消息格式）
+                    # 例如："许志国：@老三" 可能表示群消息，发送者是"许志国"
+                    # 这种情况不标记为 is_from_me，因为需要和当前用户名对比
+                    # 由于我们不知道当前登录的微信用户名，暂时无法准确判断
+                
+                # ===== 调试输出：显示解析结果 =====
+                logger.info(f"  联系人[{i}]: 名称='{name_text}', 消息='{message_text}', is_from_me={is_from_me}")
                 
                 # 计算点击位置（转换回屏幕坐标）
                 if group and hasattr(self, '_window_rect'):
@@ -1322,11 +1331,11 @@ class WeChatManager:
     
     def start_chat_monitor(self, interval: float = 5.0, max_loops: int = 12, 
                            timeout: int = 60, auto_reply_message: str = None) -> Dict:
-        """启动聊天监控（同步模式，阻塞运行）
+        """启动聊天监控（异步模式，立即返回）
         
         功能：
-        1. 同步监控微信聊天列表变化
-        2. 支持文件信号停止（创建 .monitor.stop 文件即可停止）
+        1. 后台监控微信聊天列表变化
+        2. 支持文件信号停止（创建 .monitor.stop 文件）
         3. 微信窗口关闭时自动停止
         4. 发现新消息时自动回复（如果设置了 auto_reply_message）
         
@@ -1337,23 +1346,24 @@ class WeChatManager:
             auto_reply_message: 自动回复的消息内容
         
         Returns:
-            Dict: {"status": "success", "message": "...", "data": {...}}
+            Dict: {"status": "success", "message": "监控已启动", "data": {...}}
         """
         # 检查是否已有监控在运行
         if self._monitor_running:
-            return {"status": "error", "message": "监控已在运行中"}
+            return {"status": "error", "message": "监控已在运行中，请先停止"}
         
-        logger.info("启动聊天监控（同步模式）...")
+        logger.info("启动聊天监控（异步模式）...")
         if auto_reply_message:
             logger.info(f"自动回复内容: {auto_reply_message}")
         
-        # 确保微信窗口就绪
+        # 确保微信窗口就绪（在主线程中激活）
         w, error = self._ensure_window_ready()
         if error:
             return {"status": "error", "message": error}
         
         # 重置状态
         self._monitor_running = True
+        self._monitor_result = None
         self._stop_event.clear()
         
         # 清除停止信号文件
@@ -1370,98 +1380,110 @@ class WeChatManager:
         except Exception:
             pass
         
-        start_time = time.time()
-        stats = {
-            "loops": 0, 
-            "replies_sent": 0, 
-            "stopped_by": None  # 停止原因
-        }
-        
-        try:
-            for loop in range(max_loops):
-                # 检查停止信号文件
-                if os.path.exists(self.STOP_SIGNAL_FILE):
-                    logger.info("检测到停止信号文件，停止监控")
-                    stats["stopped_by"] = "stop_signal"
-                    break
-                
-                # 检查微信窗口是否存在
-                w = self._find_gw_window()
-                if not w:
-                    logger.info("微信窗口已关闭，停止监控")
-                    stats["stopped_by"] = "window_closed"
-                    break
-                
-                # 检查超时
-                elapsed = time.time() - start_time
-                if elapsed >= timeout:
-                    logger.info(f"监控超时({timeout}秒)，自动停止")
-                    stats["stopped_by"] = "timeout"
-                    break
-                
-                stats["loops"] = loop + 1
-                
-                # 检测变化
-                monitor_result = self.monitor_chat_changes()
-                if monitor_result["status"] != "success":
-                    time.sleep(interval)
-                    continue
-                
-                # 智能回复
-                need_reply = monitor_result["data"]["need_reply_contacts"]
-                
-                if need_reply and auto_reply_message:
-                    for contact in need_reply:
-                        # 再次检查停止信号
-                        if os.path.exists(self.STOP_SIGNAL_FILE):
-                            break
-                        
-                        contact_name = contact["name"]
-                        reply_result = self.auto_reply_to_contact(contact_name, auto_reply_message)
-                        
-                        if reply_result["status"] == "success":
-                            stats["replies_sent"] += 1
-                            if contact_name in self._contact_states:
-                                self._contact_states[contact_name]["replied"] = True
-                            logger.info(f"已回复 {contact_name}: {auto_reply_message}")
-                        
-                        time.sleep(1)
-                
-                # 等待下次检查（分段检查停止信号）
-                for _ in range(int(interval * 10)):
+        def _monitor_loop():
+            start_time = time.time()
+            stats = {"loops": 0, "replies_sent": 0, "stopped_by": None}
+            
+            try:
+                for loop in range(max_loops):
+                    # 检查停止信号
                     if os.path.exists(self.STOP_SIGNAL_FILE):
+                        logger.info("检测到停止信号，停止监控")
                         stats["stopped_by"] = "stop_signal"
                         break
-                    time.sleep(0.1)
-                else:
-                    continue
-                break
-        
-        except Exception as e:
-            logger.error(f"监控异常: {e}")
-        
-        finally:
-            # 清理文件
-            try:
-                if os.path.exists(self.MONITOR_PID_FILE):
-                    os.remove(self.MONITOR_PID_FILE)
-            except Exception:
-                pass
+                    
+                    if not self._monitor_running:
+                        break
+                    
+                    # 检查微信窗口
+                    w = self._find_gw_window()
+                    if not w:
+                        logger.info("微信窗口已关闭，停止监控")
+                        stats["stopped_by"] = "window_closed"
+                        break
+                    
+                    # 检查超时
+                    if time.time() - start_time >= timeout:
+                        logger.info(f"监控超时({timeout}秒)，停止")
+                        stats["stopped_by"] = "timeout"
+                        break
+                    
+                    stats["loops"] = loop + 1
+                    
+                    # 检测变化
+                    monitor_result = self.monitor_chat_changes()
+                    if monitor_result["status"] != "success":
+                        # 分段等待，检查停止信号
+                        for _ in range(int(interval * 10)):
+                            if os.path.exists(self.STOP_SIGNAL_FILE) or not self._monitor_running:
+                                break
+                            time.sleep(0.1)
+                        continue
+                    
+                    # 智能回复
+                    need_reply = monitor_result["data"]["need_reply_contacts"]
+                    if need_reply and auto_reply_message:
+                        for contact in need_reply:
+                            if os.path.exists(self.STOP_SIGNAL_FILE) or not self._monitor_running:
+                                break
+                            
+                            contact_name = contact["name"]
+                            reply_result = self.auto_reply_to_contact(contact_name, auto_reply_message)
+                            
+                            if reply_result["status"] == "success":
+                                stats["replies_sent"] += 1
+                                if contact_name in self._contact_states:
+                                    self._contact_states[contact_name]["replied"] = True
+                                logger.info(f"已回复 {contact_name}: {auto_reply_message}")
+                            
+                            time.sleep(1)
+                    
+                    # 分段等待下次检查
+                    for _ in range(int(interval * 10)):
+                        if os.path.exists(self.STOP_SIGNAL_FILE) or not self._monitor_running:
+                            stats["stopped_by"] = "stop_signal"
+                            break
+                        time.sleep(0.1)
             
-            try:
-                if os.path.exists(self.STOP_SIGNAL_FILE):
-                    os.remove(self.STOP_SIGNAL_FILE)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"监控异常: {e}")
+                stats["stopped_by"] = f"error: {e}"
             
-            self._monitor_running = False
-            logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复")
+            finally:
+                # 清理文件
+                try:
+                    if os.path.exists(self.MONITOR_PID_FILE):
+                        os.remove(self.MONITOR_PID_FILE)
+                except Exception:
+                    pass
+                try:
+                    if os.path.exists(self.STOP_SIGNAL_FILE):
+                        os.remove(self.STOP_SIGNAL_FILE)
+                except Exception:
+                    pass
+                
+                self._monitor_running = False
+                self._monitor_result = {
+                    "status": "success",
+                    "data": {
+                        "stats": stats,
+                        "message": f"监控结束，发送 {stats['replies_sent']} 条回复，原因: {stats['stopped_by']}"
+                    }
+                }
+                logger.info(f"监控结束: 循环 {stats['loops']} 次, 发送 {stats['replies_sent']} 条回复")
+        
+        # 启动后台线程
+        self._monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
+        self._monitor_thread.start()
         
         return {
             "status": "success",
+            "message": "监控已启动（后台运行）",
             "data": {
-                "stats": stats,
-                "message": f"监控结束，共发送 {stats['replies_sent']} 条回复，停止原因: {stats['stopped_by']}"
+                "interval": interval,
+                "max_loops": max_loops,
+                "timeout": timeout,
+                "auto_reply": auto_reply_message
             }
         }
     
@@ -1471,6 +1493,23 @@ class WeChatManager:
         工作原理：创建 .monitor.stop 文件，监控循环会检测到并立即停止
         """
         logger.info("收到停止监控请求...")
+        
+        # 清理 PID 文件（如果监控已经停止但文件还在）
+        try:
+            if os.path.exists(self.MONITOR_PID_FILE):
+                os.remove(self.MONITOR_PID_FILE)
+        except Exception:
+            pass
+        
+        # 检查监控是否在运行
+        if not self._monitor_running:
+            # 清理可能残留的停止信号文件
+            try:
+                if os.path.exists(self.STOP_SIGNAL_FILE):
+                    os.remove(self.STOP_SIGNAL_FILE)
+            except Exception:
+                pass
+            return {"status": "success", "message": "监控未在运行"}
         
         # 创建停止信号文件
         try:
@@ -1668,6 +1707,9 @@ if __name__ == "__main__":
     # stop_monitor
     subparsers.add_parser("stop_monitor", help="停止聊天监控")
     
+    # test_monitor - 测试监控（单次检测，不阻塞）
+    subparsers.add_parser("test_monitor", help="测试监控（单次检测）")
+    
     args = parser.parse_args()
     
     if args.action is None:
@@ -1677,9 +1719,18 @@ if __name__ == "__main__":
     result = {"status": "error", "message": "未知操作"}
     
     if args.action == "screenshot":
-        # 设置闪烁提示
-        FLASH_CAPTURE_ENABLED = getattr(args, 'flash', False)
-        result = screenshot(args.save_path)
+        # 直接调用 capture 传递 show_flash 参数
+        img = _manager.capture(show_flash=getattr(args, 'flash', False))
+        if not img:
+            result = {"status": "error", "message": "无法获取微信窗口"}
+        elif args.save_path:
+            img.save(args.save_path)
+            result = {"status": "success", "message": f"已保存: {args.save_path}"}
+        else:
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            result = {"status": "success", "data": {"image_base64": img_base64}}
     elif args.action == "get_ocr_result":
         result = get_ocr_result()
     elif args.action == "click_coordinate":
@@ -1710,18 +1761,39 @@ if __name__ == "__main__":
     elif args.action == "check_new_messages":
         result = check_new_messages()
     elif args.action == "start_monitor":
-        print("启动监控，按 Ctrl+C 可停止...")
-        try:
-            result = start_monitor(
-                interval=args.interval, 
-                duration=args.duration,
-                auto_reply_message=args.auto_reply
-            )
-        except KeyboardInterrupt:
-            print("\n用户中断，停止监控...")
-            stop_monitor()
-            result = {"status": "success", "message": "用户中断监控"}
+        result = start_monitor(
+            interval=args.interval, 
+            duration=args.duration,
+            auto_reply_message=args.auto_reply
+        )
+        # 命令行模式：等待监控结束
+        if result["status"] == "success":
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print("\n监控运行中，按 Ctrl+C 停止...")
+            try:
+                # 等待监控线程结束
+                while _manager._monitor_thread and _manager._monitor_thread.is_alive():
+                    _manager._monitor_thread.join(timeout=0.5)
+            except KeyboardInterrupt:
+                print("\n正在停止监控...")
+                stop_monitor()
+                # 再等待一下让线程退出
+                if _manager._monitor_thread:
+                    _manager._monitor_thread.join(timeout=2)
+            # 输出最终结果
+            if _manager._monitor_result:
+                result = _manager._monitor_result
+            else:
+                result = {"status": "success", "message": "监控已停止"}
     elif args.action == "stop_monitor":
         result = stop_monitor()
+    elif args.action == "test_monitor":
+        # 测试模式：单次检测，显示详细信息
+        print("===== 测试监控 =====")
+        result = _manager.monitor_chat_changes()
+        print("\n检测结果:")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0)
     
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.action != "start_monitor":
+        print(json.dumps(result, ensure_ascii=False, indent=2))
