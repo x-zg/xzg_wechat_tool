@@ -1116,6 +1116,9 @@ class WeChatManager:
             # 2. 发送消息
             success, err = self.send_message(message)
             if success:
+                # 标记为已回复
+                if contact_name in self._contact_states:
+                    self._contact_states[contact_name]["replied"] = True
                 return {"status": "success", "message": f"已回复 {contact_name}: {message}"}
             else:
                 return {"status": "error", "message": f"发送失败: {err}"}
@@ -1123,6 +1126,107 @@ class WeChatManager:
         except Exception as e:
             logger.error(f"自动回复失败: {e}")
             return {"status": "error", "message": f"自动回复失败: {str(e)}"}
+    
+    def check_new_messages(self) -> Dict:
+        """检查是否有新消息（不自动回复，供模型自定义回复使用）
+        
+        此方法用于"检测+自定义回复"模式：
+        1. 模型调用此方法检查新消息
+        2. 模型根据消息内容自己决定回复什么
+        3. 模型调用 auto_reply 发送自定义回复
+        4. 循环调用此方法继续监控
+        
+        Returns:
+            Dict: {
+                "status": "success",
+                "data": {
+                    "has_new_messages": True/False,
+                    "new_messages": [
+                        {
+                            "contact": "联系人名称",
+                            "message": "消息内容",
+                            "position": {"x": 100, "y": 200}
+                        },
+                        ...
+                    ],
+                    "all_contacts": [...]  # 所有联系人状态
+                }
+            }
+        """
+        try:
+            # 获取当前聊天列表状态
+            current_result = self.get_chat_list()
+            if current_result["status"] != "success":
+                return current_result
+            
+            current_contacts = current_result["data"]["contacts"]
+            new_messages = []
+            
+            # 初始化所有联系人的状态（首次运行）
+            for contact in current_contacts:
+                name = contact["name"]
+                if name not in self._contact_states:
+                    self._contact_states[name] = {
+                        "last_message": contact.get("last_message", ""),
+                        "is_from_me": contact.get("is_from_me", False),
+                        "replied": True  # 首次见到，标记为已回复（不自动回复历史消息）
+                    }
+                    logger.debug(f"初始化联系人状态: {name} -> 已知消息，标记为已回复")
+            
+            # 检查每个联系人是否有新消息
+            for contact in current_contacts:
+                name = contact["name"]
+                current_message = contact.get("last_message", "")
+                current_is_from_me = contact.get("is_from_me", False)
+                saved_state = self._contact_states.get(name, {})
+                saved_message = saved_state.get("last_message", "")
+                saved_is_from_me = saved_state.get("is_from_me", False)
+                already_replied = saved_state.get("replied", False)
+                
+                # 检测消息是否变化
+                if current_message != saved_message or current_is_from_me != saved_is_from_me:
+                    # 更新保存的消息
+                    self._contact_states[name]["last_message"] = current_message
+                    self._contact_states[name]["is_from_me"] = current_is_from_me
+                    
+                    # 只有对方发的新消息才需要回复（不是我发的）
+                    if not current_is_from_me:
+                        self._contact_states[name]["replied"] = False  # 标记为未回复
+                        new_messages.append({
+                            "contact": name,
+                            "message": current_message,
+                            "position": contact.get("position"),
+                            "is_from_me": False
+                        })
+                        logger.info(f"📩 {name} 对方发来新消息: {current_message}")
+                    else:
+                        # 是我发的消息，标记为已回复
+                        self._contact_states[name]["replied"] = True
+                        logger.info(f"📤 {name} 我发送了消息: {current_message}")
+                
+                elif not already_replied and not current_is_from_me:
+                    # 消息没变，但之前标记为未回复且不是我的消息
+                    new_messages.append({
+                        "contact": name,
+                        "message": current_message,
+                        "position": contact.get("position"),
+                        "is_from_me": False
+                    })
+                    logger.info(f"{name} 之前未回复的消息")
+            
+            return {
+                "status": "success",
+                "data": {
+                    "has_new_messages": len(new_messages) > 0,
+                    "new_messages": new_messages,
+                    "all_contacts": current_contacts,
+                    "total_new": len(new_messages)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"检查新消息失败: {e}")
+            return {"status": "error", "message": f"检查新消息失败: {str(e)}"}
     
     def start_chat_monitor(self, reply_handler: callable = None, interval: float = 10.0, 
                            max_loops: int = 6, timeout: int = 60, 
@@ -1425,6 +1529,10 @@ def auto_reply(contact_name, message):
     """自动回复联系人"""
     return _manager.auto_reply_to_contact(contact_name=contact_name, message=message)
 
+def check_new_messages():
+    """检查是否有新消息（供模型自定义回复使用）"""
+    return _manager.check_new_messages()
+
 def start_monitor(interval=10.0, max_loops=6, timeout=60, auto_reply_message=None):
     """启动聊天监控（默认10秒间隔，6次循环，60秒超时）"""
     return _manager.start_chat_monitor(
@@ -1503,6 +1611,9 @@ if __name__ == "__main__":
     p_auto_reply.add_argument("--name", type=str, required=True, help="联系人名称")
     p_auto_reply.add_argument("--message", type=str, required=True, help="回复内容")
     
+    # check_new_messages
+    subparsers.add_parser("check_new_messages", help="检查是否有新消息")
+    
     # start_monitor
     p_monitor = subparsers.add_parser("start_monitor", help="启动聊天监控")
     p_monitor.add_argument("--interval", type=float, default=10.0, help="检查间隔(秒)")
@@ -1550,6 +1661,8 @@ if __name__ == "__main__":
         result = click_contact(contact_name=args.name, position=position)
     elif args.action == "auto_reply":
         result = auto_reply(contact_name=args.name, message=args.message)
+    elif args.action == "check_new_messages":
+        result = check_new_messages()
     elif args.action == "start_monitor":
         result = start_monitor(
             interval=args.interval, 
