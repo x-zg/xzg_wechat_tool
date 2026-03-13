@@ -675,7 +675,10 @@ python {baseDir}/agent.py reset_contact_states
 模型:
   【第一次 - 启动监控】
   1. [调用 reset_contact_states()] 重置状态
+     → ⚠️ 必须检查返回值 status: "success"
   2. [调用 check_new_messages()] 初始化状态基线
+     → ⚠️ 必须检查返回值 status: "success"
+     → 确认返回了 all_contacts 列表
   3. 告知用户：监控已启动，当前无新消息，10分钟后再次检查
 
   【10分钟后 - 第一次定时检查】
@@ -688,6 +691,44 @@ python {baseDir}/agent.py reset_contact_states
   2. 同上...
 
   【注意】后续所有检查都只调用 check_new_messages()，不再重置状态
+```
+
+**⚠️ 重要：定时任务的自我检查机制**
+
+模型设置定时任务后，必须进行自我检查，确保定时任务真正成功运行：
+
+```
+【必须检查的事项】
+1. 初始化步骤必须有返回值
+   → reset_contact_states() 必须返回 {"status": "success", ...}
+   → check_new_messages() 必须返回 {"status": "success", "data": {...}}
+   → 如果返回 status: "error" → 定时任务失败，必须告知用户并重新尝试
+
+2. 初始化返回值必须包含有效数据
+   → check_new_messages() 返回的 all_contacts 必须有内容
+   → 如果 all_contacts 为空数组 → 可能微信未打开或无法识别，定时任务无意义
+
+3. 定时任务必须能持续执行
+   → 第一次检查成功后，确认定时器已设置
+   → 后续每次检查都要验证返回值
+   → 如果某次检查返回 error → 记录错误并告知用户
+
+【错误处理示例】
+```
+情况1: 初始化失败
+  → reset_contact_states() 返回 {"status": "error", "message": "微信未运行"}
+  → 模型应告知用户："定时任务启动失败，请确保微信已打开"
+  → 不要继续设置定时器
+
+情况2: 检查失败
+  → check_new_messages() 返回 {"status": "error", ...}
+  → 模型应记录错误，告知用户："本次检查失败，将在下次定时继续尝试"
+  → 定时任务继续运行，不中断
+
+情况3: 返回数据为空
+  → check_new_messages() 返回 all_contacts: []
+  → 可能是微信窗口未激活或 OCR 识别失败
+  → 告知用户："无法获取联系人列表，请检查微信状态"
 ```
 
 ---
