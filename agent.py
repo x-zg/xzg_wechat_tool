@@ -1757,13 +1757,12 @@ root.mainloop()
     # ==================== 同步步进式监控功能 ====================
     
     def start_step_monitor(self, interval: float = 5.0, timeout: int = 300) -> Dict:
-        """启动同步步进式监控
+        """启动步进式监控（后台异步运行，step_check 查询状态）
         
         工作方式：
-        1. 调用此方法启动监控，初始化状态
-        2. 调用 step_check() 执行一次检测，返回结果
-        3. 根据返回结果决定是否继续（设置 should_continue）
-        4. 重复步骤 2-3 直到 stop_step_monitor() 或超时
+        1. 启动后台线程自动检测
+        2. 调用 step_check() 查询当前状态（立即返回，不阻塞）
+        3. 调用 stop_step_monitor() 停止
         
         Args:
             interval: 检测间隔（秒），默认5秒
@@ -1776,7 +1775,7 @@ root.mainloop()
         if self._monitor_running:
             return {"status": "error", "message": "监控已在运行中，请先停止"}
         
-        logger.info("启动同步步进式监控...")
+        logger.info("启动步进式监控（后台异步模式）...")
         
         # 确保微信窗口就绪
         w, error = self._ensure_window_ready()
@@ -1791,6 +1790,7 @@ root.mainloop()
         self._step_start_time = time.time()
         self._step_loop_count = 0
         self._step_stats = {"checks": 0, "replies_sent": 0}
+        self._step_last_result = None  # 最近一次检测结果
         
         # 清除停止信号文件
         try:
@@ -1799,132 +1799,139 @@ root.mainloop()
         except Exception:
             pass
         
+        # 启动后台检测线程
+        def _step_monitor_thread():
+            while self._monitor_running:
+                # 检查停止信号
+                if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                    break
+                
+                # 检查超时
+                elapsed = time.time() - self._step_start_time
+                if elapsed >= self._step_timeout:
+                    break
+                
+                # 检查微信窗口
+                w = self._find_gw_window()
+                if not w:
+                    break
+                
+                # 执行检测
+                self._step_loop_count += 1
+                self._step_stats["checks"] += 1
+                
+                try:
+                    monitor_result = self.monitor_chat_changes()
+                    need_reply = []
+                    if monitor_result["status"] == "success":
+                        need_reply = monitor_result["data"].get("need_reply_contacts", [])
+                        # 将新消息添加到队列
+                        if need_reply:
+                            with self._queue_lock:
+                                for contact in need_reply:
+                                    self._new_messages_queue.append({
+                                        "timestamp": time.time(),
+                                        "contact": contact["name"],
+                                        "message": contact["message"],
+                                        "auto_replied": False
+                                    })
+                            logger.info(f"检测到 {len(need_reply)} 条新消息")
+                    
+                    # 保存结果
+                    self._step_last_result = {
+                        "status": "success",
+                        "should_continue": True,
+                        "data": {
+                            "check_count": self._step_loop_count,
+                            "elapsed_time": round(time.time() - self._step_start_time, 1),
+                            "has_new_messages": len(need_reply) > 0,
+                            "need_reply_contacts": need_reply
+                        }
+                    }
+                except Exception as e:
+                    logger.error(f"检测失败: {e}")
+                    self._step_last_result = {
+                        "status": "success",
+                        "should_continue": True,
+                        "data": {
+                            "check_count": self._step_loop_count,
+                            "elapsed_time": round(time.time() - self._step_start_time, 1),
+                            "error": str(e),
+                            "has_new_messages": False,
+                            "need_reply_contacts": []
+                        }
+                    }
+                
+                # 等待下一次检测（分段检查停止信号）
+                wait_loops = int(self._step_interval * 10)
+                for _ in range(wait_loops):
+                    if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
+                        break
+                    time.sleep(0.1)
+            
+            # 线程结束
+            self._monitor_running = False
+            logger.info("步进式监控线程已结束")
+        
+        self._monitor_thread = threading.Thread(target=_step_monitor_thread, daemon=True)
+        self._monitor_thread.start()
+        
         return {
             "status": "success",
-            "message": "同步步进式监控已启动，请调用 step_check() 执行检测",
+            "message": "步进式监控已启动（后台运行），调用 step_check() 查询状态",
             "data": {
                 "interval": interval,
                 "timeout": timeout,
-                "elapsed_time": 0,
-                "step_loop_count": 0
+                "monitor_running": True
             }
         }
     
     def step_check(self) -> Dict:
-        """执行一次检测（同步步进式监控）
-        
-        此方法会：
-        1. 检查是否需要停止（超时/停止信号）
-        2. 执行一次聊天列表检测
-        3. 返回检测结果，包含 should_continue 字段
+        """查询监控状态（立即返回，不阻塞）
         
         Returns:
             Dict: {
                 "status": "success",
-                "should_continue": True/False,  # 是否应该继续检测
-                "data": {
-                    "has_new_messages": True/False,
-                    "need_reply_contacts": [...],
-                    "check_count": 检测次数,
-                    "elapsed_time": 已运行时间,
-                    "stop_reason": 停止原因（如果 should_continue=False）
-                }
+                "should_continue": True/False,
+                "data": {...}
             }
         """
-        # 检查监控是否在运行
-        if not self._monitor_running:
+        if not self._monitor_running and not hasattr(self, '_step_last_result'):
             return {
                 "status": "error",
                 "should_continue": False,
                 "message": "监控未启动，请先调用 start_step_monitor()"
             }
         
-        # 检查停止信号
-        if os.path.exists(self.STOP_SIGNAL_FILE) or self._stop_event.is_set():
-            self._monitor_running = False
+        # 检查是否已停止
+        if not self._monitor_running:
+            elapsed = time.time() - getattr(self, '_step_start_time', time.time())
             return {
                 "status": "success",
                 "should_continue": False,
                 "data": {
-                    "stop_reason": "stop_signal",
-                    "message": "检测到停止信号"
-                }
-            }
-        
-        elapsed_time = time.time() - self._step_start_time
-        
-        # 检查超时
-        if elapsed_time >= self._step_timeout:
-            self._monitor_running = False
-            return {
-                "status": "success",
-                "should_continue": False,
-                "data": {
-                    "stop_reason": "timeout",
-                    "elapsed_time": elapsed_time,
-                    "message": f"监控超时({self._step_timeout}秒)"
-                }
-            }
-        
-        # 检查微信窗口是否存在
-        w = self._find_gw_window()
-        if not w:
-            self._monitor_running = False
-            return {
-                "status": "success",
-                "should_continue": False,
-                "data": {
-                    "stop_reason": "window_closed",
-                    "message": "微信窗口已关闭"
-                }
-            }
-        
-        # 执行检测
-        self._step_loop_count += 1
-        self._step_stats["checks"] += 1
-        
-        monitor_result = self.monitor_chat_changes()
-        
-        if monitor_result["status"] != "success":
-            # 检测失败，但继续监控
-            return {
-                "status": "success",
-                "should_continue": True,
-                "data": {
-                    "check_count": self._step_loop_count,
-                    "elapsed_time": elapsed_time,
-                    "error": monitor_result.get("message"),
+                    "stop_reason": "stopped",
+                    "elapsed_time": round(elapsed, 1),
                     "has_new_messages": False,
                     "need_reply_contacts": []
                 }
             }
         
-        # 获取需要回复的联系人
-        need_reply = monitor_result["data"].get("need_reply_contacts", [])
+        # 返回最近一次检测结果
+        if hasattr(self, '_step_last_result') and self._step_last_result:
+            return self._step_last_result
         
-        # 将新消息添加到队列
-        if need_reply:
-            with self._queue_lock:
-                for contact in need_reply:
-                    self._new_messages_queue.append({
-                        "timestamp": time.time(),
-                        "contact": contact["name"],
-                        "message": contact["message"],
-                        "auto_replied": False
-                    })
-            logger.info(f"检测到 {len(need_reply)} 条新消息")
-        
+        # 还没有检测结果
+        elapsed = time.time() - self._step_start_time
         return {
             "status": "success",
             "should_continue": True,
             "data": {
-                "check_count": self._step_loop_count,
-                "elapsed_time": round(elapsed_time, 1),
-                "interval": self._step_interval,
-                "remaining_time": round(self._step_timeout - elapsed_time, 1),
-                "has_new_messages": len(need_reply) > 0,
-                "need_reply_contacts": need_reply,
-                "changes": monitor_result["data"].get("changes", [])
+                "check_count": 0,
+                "elapsed_time": round(elapsed, 1),
+                "has_new_messages": False,
+                "need_reply_contacts": [],
+                "message": "等待首次检测..."
             }
         }
     
@@ -1950,24 +1957,25 @@ root.mainloop()
         return result
     
     def stop_step_monitor(self) -> Dict:
-        """停止同步步进式监控
+        """停止步进式监控（立即返回）
         
         Returns:
             Dict: {"status": "success", "data": {"stats": {...}}}
         """
-        logger.info("停止同步步进式监控...")
+        logger.info("停止步进式监控...")
         
+        # 设置停止标志
         self._monitor_running = False
         self._stop_event.set()
         
-        # 创建停止信号文件（确保后台线程也能检测到）
+        # 创建停止信号文件
         try:
             with open(self.STOP_SIGNAL_FILE, 'w') as f:
                 f.write(str(time.time()))
         except Exception:
             pass
         
-        elapsed_time = time.time() - getattr(self, '_step_start_time', time.time())
+        elapsed = time.time() - getattr(self, '_step_start_time', time.time())
         
         return {
             "status": "success",
@@ -1976,32 +1984,30 @@ root.mainloop()
                 "stats": {
                     "checks": self._step_stats.get("checks", 0),
                     "replies_sent": self._step_stats.get("replies_sent", 0),
-                    "elapsed_time": round(elapsed_time, 1)
+                    "elapsed_time": round(elapsed, 1)
                 },
                 "pending_messages_count": len(self._new_messages_queue)
             }
         }
     
     def get_step_status(self) -> Dict:
-        """获取同步步进式监控状态
+        """获取步进式监控状态（立即返回）
         
         Returns:
             Dict: {"status": "success", "data": {...}}
         """
-        elapsed_time = 0
+        elapsed = 0
         if hasattr(self, '_step_start_time'):
-            elapsed_time = time.time() - self._step_start_time
+            elapsed = time.time() - self._step_start_time
         
         return {
             "status": "success",
             "data": {
                 "monitor_running": self._monitor_running,
-                "step_mode": True,
                 "check_count": getattr(self, '_step_loop_count', 0),
-                "elapsed_time": round(elapsed_time, 1),
+                "elapsed_time": round(elapsed, 1),
                 "interval": getattr(self, '_step_interval', 5.0),
                 "timeout": getattr(self, '_step_timeout', 300),
-                "remaining_time": round(getattr(self, '_step_timeout', 300) - elapsed_time, 1),
                 "stats": self._step_stats if hasattr(self, '_step_stats') else {},
                 "pending_messages": len(self._new_messages_queue)
             }
@@ -2425,9 +2431,10 @@ if __name__ == "__main__":
     elif args.action == "get_step_status":
         result = get_step_status()
     elif args.action == "step_monitor_demo":
-        # 演示模式：完整的同步步进式监控流程
-        print("===== 同步步进式监控演示 =====")
+        # 演示模式：完整的步进式监控流程
+        print("===== 步进式监控演示 =====")
         print(f"检测间隔: {args.interval}秒, 超时: {args.timeout}秒")
+        print("提示: 另开终端运行 'python agent.py stop_step_monitor' 可停止监控")
         
         # 1. 启动监控
         start_result = start_step_monitor(interval=args.interval, timeout=args.timeout)
@@ -2436,32 +2443,38 @@ if __name__ == "__main__":
         if start_result["status"] != "success":
             result = start_result
         else:
-            # 2. 循环检测
-            while True:
-                check_result = step_check()
-                print(f"\n--- 检测 #{check_result['data'].get('check_count', 0)} ---")
-                print(f"已运行: {check_result['data'].get('elapsed_time', 0)}秒")
-                print(f"新消息: {check_result['data'].get('has_new_messages', False)}")
-                
-                if check_result['data'].get('need_reply_contacts'):
-                    print("需要回复的联系人:")
-                    for contact in check_result['data']['need_reply_contacts']:
-                        print(f"  - {contact['name']}: {contact['message']}")
-                        
-                        # 如果设置了自动回复
-                        if args.auto_reply:
-                            reply_result = step_reply(contact['name'], args.auto_reply)
-                            print(f"    回复结果: {reply_result['message']}")
-                
-                # 检查是否应该继续
-                if not check_result.get('should_continue', False):
-                    print(f"\n监控结束: {check_result['data'].get('stop_reason', 'unknown')}")
-                    result = stop_step_monitor()
-                    break
-                
-                # 等待下一次检测
-                print(f"等待 {args.interval} 秒后继续检测...")
-                time.sleep(args.interval)
+            # 2. 循环查询状态
+            try:
+                while True:
+                    check_result = step_check()
+                    check_data = check_result.get("data", {})
+                    
+                    print(f"\n--- 状态查询 #{check_data.get('check_count', 0)} ---")
+                    print(f"已运行: {check_data.get('elapsed_time', 0)}秒")
+                    print(f"新消息: {check_data.get('has_new_messages', False)}")
+                    
+                    if check_data.get('need_reply_contacts'):
+                        print("需要回复的联系人:")
+                        for contact in check_data['need_reply_contacts']:
+                            print(f"  - {contact['name']}: {contact['message']}")
+                            
+                            # 如果设置了自动回复
+                            if args.auto_reply:
+                                reply_result = step_reply(contact['name'], args.auto_reply)
+                                print(f"    回复结果: {reply_result['message']}")
+                    
+                    # 检查是否应该继续
+                    if not check_result.get('should_continue', False):
+                        print(f"\n监控结束: {check_data.get('stop_reason', 'stopped')}")
+                        result = stop_step_monitor()
+                        break
+                    
+                    # 等待一段时间再查询（不阻塞，可以响应停止）
+                    time.sleep(1)  # 每秒查询一次状态
+                    
+            except KeyboardInterrupt:
+                print("\n\n用户中断，停止监控...")
+                result = stop_step_monitor()
     
     if args.action not in ["start_monitor", "step_monitor_demo"]:
         print(json.dumps(result, ensure_ascii=False, indent=2))
