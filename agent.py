@@ -1522,12 +1522,14 @@ root.mainloop()
         
         return {
             "status": "success",
-            "message": "监控已启动（后台运行）",
+            "message": "监控已启动（后台运行中），你可以继续与我对话。发送'停止监控'命令可以停止监控。",
             "data": {
                 "interval": interval,
                 "max_loops": max_loops,
                 "timeout": timeout,
-                "auto_reply": auto_reply_message
+                "auto_reply": auto_reply_message,
+                "monitor_running": True,
+                "hint": "监控正在后台运行，我会持续检测新消息。你可以随时发送命令，包括'停止监控'来终止监控。"
             }
         }
     
@@ -1553,7 +1555,7 @@ root.mainloop()
                     os.remove(self.STOP_SIGNAL_FILE)
             except Exception:
                 pass
-            return {"status": "success", "message": "监控未在运行"}
+            return {"status": "success", "message": "监控未在运行", "data": {"monitor_running": False}}
         
         # 创建停止信号文件
         try:
@@ -1564,7 +1566,39 @@ root.mainloop()
             logger.warning(f"创建停止信号文件失败: {e}")
             return {"status": "error", "message": f"创建停止信号失败: {e}"}
         
-        return {"status": "success", "message": "已发送停止信号，监控将在当前操作后停止"}
+        # 等待监控停止（最多 3 秒）
+        for _ in range(30):
+            if not self._monitor_running:
+                break
+            time.sleep(0.1)
+        
+        if self._monitor_running:
+            return {"status": "success", "message": "已发送停止信号，监控正在停止中...", "data": {"monitor_running": True}}
+        else:
+            return {"status": "success", "message": "监控已成功停止", "data": {"monitor_running": False}}
+    
+    def get_monitor_status(self) -> Dict:
+        """获取监控状态
+        
+        Returns:
+            Dict: {"status": "success", "data": {"monitor_running": True/False, ...}}
+        """
+        result = {
+            "status": "success",
+            "data": {
+                "monitor_running": self._monitor_running,
+            }
+        }
+        
+        if self._monitor_running:
+            result["data"]["message"] = "监控正在运行中，发送'停止监控'可以停止"
+        else:
+            result["data"]["message"] = "监控未运行"
+        
+        if self._monitor_result:
+            result["data"]["last_result"] = self._monitor_result
+        
+        return result
     
     def get_contact_states(self) -> Dict:
         """获取当前所有联系人的状态"""
@@ -1672,6 +1706,10 @@ def start_monitor(interval=5.0, duration=60, auto_reply_message=None):
 def stop_monitor():
     """停止聊天监控"""
     return _manager.stop_chat_monitor()
+
+def get_monitor_status():
+    """获取监控状态（检查监控是否在运行）"""
+    return _manager.get_monitor_status()
 
 
 if __name__ == "__main__":
