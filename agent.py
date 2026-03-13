@@ -25,6 +25,8 @@ if sys.platform == 'win32':
 import base64
 import time
 import logging
+import signal
+import psutil  # 用于跨进程管理
 from typing import Any, Dict, Optional, Tuple
 from io import BytesIO
 from pathlib import Path
@@ -63,6 +65,9 @@ class WeChatManager:
     """微信客户端管理器"""
     
     WAKE_UP_HOTKEY = ('ctrl', 'alt', 'w')
+    
+    # PID 文件路径（用于跨进程停止监控）
+    MONITOR_PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".monitor.pid")
 
     def __init__(self):
         self._app = None
@@ -613,6 +618,76 @@ class WeChatManager:
         logger.info("消息发送完成")
         return True, None
     
+    def send_image(self, image_path: str) -> Tuple[bool, Optional[str]]:
+        """发送图片
+        
+        Args:
+            image_path: 图片文件路径
+        
+        Returns:
+            Tuple[bool, Optional[str]]: (成功?, 错误信息)
+        """
+        import win32clipboard
+        
+        logger.info(f"发送图片: {image_path}")
+        
+        # 1. 检查图片文件是否存在
+        if not os.path.exists(image_path):
+            return False, f"图片文件不存在: {image_path}"
+        
+        # 2. 确保窗口可见
+        w = self.get_main_window(activate_first=True)
+        if not w:
+            return False, "未找到微信窗口"
+        
+        rect = self.get_window_rect()
+        if not rect:
+            return False, "无法获取窗口位置"
+        
+        logger.debug(f"窗口位置: ({rect['left']}, {rect['top']}), 大小: ({rect['width']}, {rect['height']})")
+        
+        # 3. 将图片复制到剪贴板
+        try:
+            # 打开图片
+            img = Image.open(image_path)
+            
+            # 将图片复制到剪贴板（Windows 方式）
+            output = BytesIO()
+            img.convert('RGB').save(output, 'BMP')
+            data = output.getvalue()[14:]  # BMP 文件头是 14 字节，需要去掉
+            output.close()
+            
+            # 设置剪贴板数据
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+            win32clipboard.CloseClipboard()
+            
+            logger.info("图片已复制到剪贴板")
+            
+        except Exception as e:
+            logger.error(f"复制图片到剪贴板失败: {e}")
+            return False, f"复制图片到剪贴板失败: {str(e)}"
+        
+        time.sleep(0.3)
+        
+        # 4. 点击输入框
+        input_x = rect["left"] + rect["width"] // 2
+        input_y = rect["bottom"] - 60
+        self.click(input_x, input_y)
+        time.sleep(0.3)
+        
+        # 5. 粘贴图片 (Ctrl+V)
+        pyautogui.hotkey('ctrl', 'v')
+        time.sleep(0.8)  # 等待图片预览加载
+        
+        # 6. 发送 (Enter)
+        pyautogui.press('enter')
+        time.sleep(0.5)
+        
+        logger.info("图片发送完成")
+        return True, None
+    
     def get_ocr_result(self, word: str = None) -> Dict:
         """获取 OCR 结果（每次获取最新截图）
         
@@ -1087,6 +1162,14 @@ class WeChatManager:
             "contacts_monitored": len(self._contact_states)
         }
         
+        # 写入 PID 文件（用于跨进程停止）
+        try:
+            with open(self.MONITOR_PID_FILE, 'w') as f:
+                f.write(str(os.getpid()))
+            logger.info(f"已写入监控 PID 文件: {self.MONITOR_PID_FILE}")
+        except Exception as e:
+            logger.warning(f"写入 PID 文件失败: {e}")
+        
         try:
             for loop in range(max_loops):
                 # 检查超时
@@ -1156,6 +1239,15 @@ class WeChatManager:
             logger.info("\n监控被用户中断 (Ctrl+C)")
             self._monitor_running = False
         
+        finally:
+            # 清理 PID 文件
+            try:
+                if os.path.exists(self.MONITOR_PID_FILE):
+                    os.remove(self.MONITOR_PID_FILE)
+                    logger.info("已清理 PID 文件")
+            except Exception as e:
+                logger.warning(f"清理 PID 文件失败: {e}")
+        
         logger.info("\n" + "=" * 50)
         logger.info("监控结束")
         logger.info(f"统计: 循环 {stats['loops']} 次, 检测 {stats['changes_detected']} 次变化, 发送 {stats['replies_sent']} 条回复")
@@ -1171,10 +1263,79 @@ class WeChatManager:
         }
     
     def stop_chat_monitor(self) -> Dict:
-        """停止聊天监控"""
-        self._monitor_running = False
-        logger.info("已发送停止监控信号")
-        return {"status": "success", "message": "已发送停止监控信号"}
+        """停止聊天监控（支持跨进程停止）
+        
+        工作原理：
+        1. 读取 PID 文件获取监控进程的 PID
+        2. 向该进程发送终止信号
+        3. 清理 PID 文件
+        """
+        # 检查 PID 文件是否存在
+        if not os.path.exists(self.MONITOR_PID_FILE):
+            logger.info("未找到监控 PID 文件，可能没有监控在运行")
+            return {"status": "success", "message": "当前没有监控进程在运行"}
+        
+        try:
+            # 读取 PID
+            with open(self.MONITOR_PID_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            
+            logger.info(f"读取到监控进程 PID: {pid}")
+            
+            # 检查进程是否存在
+            if not psutil.pid_exists(pid):
+                logger.info(f"PID {pid} 进程不存在，清理 PID 文件")
+                os.remove(self.MONITOR_PID_FILE)
+                return {"status": "success", "message": "监控进程已不存在，已清理 PID 文件"}
+            
+            # 获取进程信息
+            try:
+                process = psutil.Process(pid)
+                process_name = process.name()
+                logger.info(f"找到进程: PID={pid}, 名称={process_name}")
+            except psutil.NoSuchProcess:
+                os.remove(self.MONITOR_PID_FILE)
+                return {"status": "success", "message": "进程已不存在"}
+            
+            # 终止进程
+            try:
+                # 先尝试优雅终止
+                process.terminate()
+                # 等待最多3秒
+                try:
+                    process.wait(timeout=3)
+                    logger.info(f"进程 {pid} 已优雅终止")
+                except psutil.TimeoutExpired:
+                    # 如果还没终止，强制杀死
+                    process.kill()
+                    logger.info(f"进程 {pid} 已强制终止")
+                
+            except psutil.NoSuchProcess:
+                logger.info(f"进程 {pid} 已不存在")
+            except psutil.AccessDenied:
+                logger.warning(f"无权限终止进程 {pid}，可能需要管理员权限")
+                return {"status": "error", "message": f"无权限终止监控进程 (PID={pid})，可能需要管理员权限"}
+            
+            # 清理 PID 文件
+            try:
+                os.remove(self.MONITOR_PID_FILE)
+                logger.info("已清理 PID 文件")
+            except Exception as e:
+                logger.warning(f"清理 PID 文件失败: {e}")
+            
+            return {"status": "success", "message": f"已停止监控进程 (PID={pid})"}
+            
+        except ValueError as e:
+            logger.error(f"PID 文件格式错误: {e}")
+            try:
+                os.remove(self.MONITOR_PID_FILE)
+            except:
+                pass
+            return {"status": "error", "message": "PID 文件格式错误，已清理"}
+            
+        except Exception as e:
+            logger.error(f"停止监控失败: {e}")
+            return {"status": "error", "message": f"停止监控失败: {str(e)}"}
     
     def get_contact_states(self) -> Dict:
         """获取当前所有联系人的状态"""
@@ -1208,6 +1369,14 @@ def get_wechat_status():
 def send_message_to_current(message):
     """发送消息"""
     return _manager.send_message(message)
+
+def send_image_to_current(image_path):
+    """发送图片"""
+    success, err = _manager.send_image(image_path)
+    if success:
+        return {"status": "success", "message": f"图片发送成功: {image_path}"}
+    else:
+        return {"status": "error", "message": err}
 
 def screenshot(save_path=None):
     """截图"""
@@ -1265,6 +1434,10 @@ def start_monitor(interval=10.0, max_loops=6, timeout=60, auto_reply_message=Non
         auto_reply_message=auto_reply_message
     )
 
+def stop_monitor():
+    """停止聊天监控"""
+    return _manager.stop_chat_monitor()
+
 
 if __name__ == "__main__":
     import argparse
@@ -1311,6 +1484,10 @@ if __name__ == "__main__":
     p_send = subparsers.add_parser("send_message", help="发送消息")
     p_send.add_argument("--message", type=str, required=True, help="消息内容")
     
+    # send_image
+    p_send_image = subparsers.add_parser("send_image", help="发送图片")
+    p_send_image.add_argument("--path", type=str, required=True, help="图片路径")
+    
     # get_chat_list
     p_chat_list = subparsers.add_parser("get_chat_list", help="获取聊天列表")
     p_chat_list.add_argument("--count", type=int, default=5, help="获取数量")
@@ -1332,6 +1509,9 @@ if __name__ == "__main__":
     p_monitor.add_argument("--max_loops", type=int, default=6, help="最大循环次数(默认6次,约1分钟)")
     p_monitor.add_argument("--timeout", type=int, default=60, help="超时时间(秒),超过后自动停止")
     p_monitor.add_argument("--auto_reply", type=str, default=None, help="自动回复内容")
+    
+    # stop_monitor
+    subparsers.add_parser("stop_monitor", help="停止聊天监控")
     
     args = parser.parse_args()
     
@@ -1361,6 +1541,8 @@ if __name__ == "__main__":
             result = {"status": "success", "message": "消息发送成功"}
         else:
             result = {"status": "error", "message": err}
+    elif args.action == "send_image":
+        result = send_image_to_current(args.path)
     elif args.action == "get_chat_list":
         result = get_chat_list(args.count)
     elif args.action == "click_contact":
@@ -1375,5 +1557,7 @@ if __name__ == "__main__":
             timeout=args.timeout,
             auto_reply_message=args.auto_reply
         )
+    elif args.action == "stop_monitor":
+        result = stop_monitor()
     
     print(json.dumps(result, ensure_ascii=False, indent=2))
