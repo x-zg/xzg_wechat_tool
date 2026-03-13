@@ -683,7 +683,13 @@ python {baseDir}/agent.py reset_contact_states
 
   【10分钟后 - 第一次定时检查】
   1. [调用 check_new_messages()] 检查新消息
-  2. 如果 has_new_messages=true → 提示用户"XXX发来新消息"
+  2. 如果 has_new_messages=true：
+     a. 告知用户"XXX发来新消息：XXX"
+     b. [调用 auto_reply --name "联系人" --message "回复内容"] 自动回复
+     c. 回复内容可以是：
+        - 用户预设的回复模板
+        - 根据消息内容智能生成
+        - 默认回复"收到，稍后回复"
   3. 如果 has_new_messages=false → 继续等待
 
   【20分钟后 - 第二次定时检查】
@@ -691,6 +697,43 @@ python {baseDir}/agent.py reset_contact_states
   2. 同上...
 
   【注意】后续所有检查都只调用 check_new_messages()，不再重置状态
+```
+
+**⚠️ 自动回复规则（重要！）**
+
+模型检测到新消息后，**必须自动回复**，遵循以下规则：
+
+```
+【自动回复触发条件】
+check_new_messages() 返回 has_new_messages: true
+  → 遍历 new_messages 列表
+  → 对每条新消息调用 auto_reply
+
+【回复内容来源】
+1. 优先使用用户预设的回复模板（如果有）
+2. 根据消息内容智能生成回复
+3. 默认回复："收到，稍后回复您"
+
+【自动回复流程】
+检测到新消息 → 告知用户 → 自动调用 auto_reply → 告知用户已回复
+```
+
+**示例对话：**
+```
+【定时检查发现新消息】
+模型: 检测到"小许"发来新消息："今天下午开会"
+      正在自动回复...
+      [调用 auto_reply --name "小许" --message "收到，稍后回复您"]
+      已自动回复"小许"
+
+【多条新消息】
+模型: 检测到2条新消息：
+      - 小许："今天下午开会"
+      - 张三："文件收到了吗"
+      正在逐一自动回复...
+      [调用 auto_reply --name "小许" --message "收到，稍后回复您"]
+      [调用 auto_reply --name "张三" --message "收到，稍后回复您"]
+      已全部回复完成
 ```
 
 **⚠️ 重要：定时任务的自我检查机制**
