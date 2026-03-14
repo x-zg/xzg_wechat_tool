@@ -684,22 +684,48 @@ auto_reply 成功后，立即扫描聊天列表：
 
 **后续定时检查（每隔N分钟）：**
 ```
-步骤1: 检查新消息
+步骤1: 检查状态文件是否存在
+  → 调用 get_contact_states() 获取当前状态
+  → 如果状态为空或不存在 → 需要先初始化
+  
+步骤2: 判断是否需要初始化
+  情况A - 状态不存在或为空：
+    → [调用 reset_contact_states()] 重置状态
+    → [调用 check_new_messages()] 初始化
+    → 注意：此时 has_new_messages 应为 false（首次初始化）
+    → 跳到步骤4 设置下一次定时
+    
+  情况B - 状态存在：
+    → 继续步骤3 检查新消息
+  
+步骤3: 检查新消息
   → 调用 check_new_messages()
   → ⚠️ 不要再调用 reset_contact_states()！
-  
-步骤2: 系统自动检测变化
-  → 对比当前消息与上次保存的消息
+  → 系统自动检测变化
   → 如果有变化且是对方发的消息 → has_new_messages = true
   → 如果消息来自我（手动回复） → 自动标记为已回复
   
-步骤3: 根据结果处理
+步骤4: 根据结果处理
   → 有新消息 → 自动回复
   → 无新消息 → 继续等待
 
-步骤4: 设置下一次定时
+步骤5: 设置下一次定时
   → 使用 cron.add 设置下次检查时间
   → schedule.at = 当前时间 + 间隔时间
+```
+
+**⚠️ 重要：定时任务触发时的状态检查**
+
+定时任务触发时，模型必须先检查状态是否存在：
+
+```
+【错误做法】
+定时触发 → 直接 check_new_messages() → 把旧消息当新消息
+
+【正确做法】
+定时触发 → 检查状态是否存在
+  → 不存在：reset_contact_states() + check_new_messages() 初始化
+  → 存在：直接 check_new_messages() 检查变化
 ```
 
 **关键要点：**
@@ -731,18 +757,25 @@ auto_reply 成功后，立即扫描聊天列表：
   4. 告知用户：监控已启动，下次检查时间：XX:XX
 
   【10分钟后 - 定时任务触发】
-  1. [调用 check_new_messages()] 检查新消息
-  2. 如果 has_new_messages=true：
+  1. [调用 get_contact_states()] 检查状态是否存在
+     → 如果状态为空：
+        a. [调用 reset_contact_states()]
+        b. [调用 check_new_messages()] 初始化
+        c. [使用 cron.add 设置下一次定时]
+        d. 结束本次检查
+     → 如果状态存在：继续下一步
+  2. [调用 check_new_messages()] 检查新消息
+  3. 如果 has_new_messages=true：
      a. 告知用户"XXX发来新消息：XXX"
      b. [调用 auto_reply --name "联系人" --message "回复内容"] 自动回复
-  3. 如果 has_new_messages=false → 继续等待
-  4. [使用 cron.add 设置下一次定时]
+  4. 如果 has_new_messages=false → 继续等待
+  5. [使用 cron.add 设置下一次定时]
      → schedule.at = 当前时间 + 10分钟
 
   【注意】
   - 每次定时任务执行后，都要用 cron.add 设置下一次定时
-  - 只在第一次启动时调用 reset_contact_states()
-  - 后续只调用 check_new_messages()，不重置状态
+  - 每次定时触发时，都要先检查状态是否存在
+  - 状态不存在时先初始化，不要直接检查新消息
 ```
 
 **⚠️ 自动回复规则（重要！）**
