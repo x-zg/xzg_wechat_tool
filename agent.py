@@ -1178,7 +1178,9 @@ class WeChatManager:
                 "data": {
                     "has_new_messages": True/False,
                     "new_messages": [...],
-                    "all_contacts": [...]
+                    "all_contacts": [...],
+                    "is_first_init": True/False,  # 是否是首次初始化
+                    "initialized_count": 0  # 本次初始化的联系人数量
                 }
             }
         """
@@ -1193,6 +1195,10 @@ class WeChatManager:
 
             # 检查每个联系人是否有新消息
             has_changes = False
+            
+            # ===== 新增：跟踪是否是首次初始化 =====
+            is_first_init = len(self._contact_states) == 0
+            initialized_count = 0
 
             # 初始化所有联系人的状态（首次运行）
             for contact in current_contacts:
@@ -1204,6 +1210,7 @@ class WeChatManager:
                         "replied": True  # 首次见到，标记为已回复
                     }
                     has_changes = True  # 初始化后需要保存状态
+                    initialized_count += 1  # 统计初始化数量
             for contact in current_contacts:
                 name = contact["name"]
                 current_message = contact.get("last_message", "")
@@ -1260,13 +1267,20 @@ class WeChatManager:
             if has_changes:
                 self._save_states()
 
+            # ===== 关键：如果是首次初始化，has_new_messages 应该为 false =====
+            # 首次初始化时，所有联系人都是"新发现"，但不应该当作"新消息"
+            if is_first_init and initialized_count > 0:
+                new_messages = []  # 清空新消息列表
+
             return {
                 "status": "success",
                 "data": {
                     "has_new_messages": len(new_messages) > 0,
                     "new_messages": new_messages,
                     "all_contacts": current_contacts,
-                    "total_new": len(new_messages)
+                    "total_new": len(new_messages),
+                    "is_first_init": is_first_init,  # 新增：是否是首次初始化
+                    "initialized_count": initialized_count  # 新增：初始化的联系人数量
                 }
             }
 
