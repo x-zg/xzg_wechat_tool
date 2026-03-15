@@ -1135,11 +1135,17 @@ class WeChatManager:
             # 2. 发送消息
             success, err = self.send_message(message)
             if success:
-                # ===== 关键：发送成功后，立即更新所有"我发的消息"的联系人状态 =====
-                # 这样可以防止发错人后，错误目标被检测为"有新消息"
+                # ===== 关键：发送成功后，记录回复内容并更新状态 =====
                 time.sleep(0.5)  # 等待微信更新聊天列表
                 
-                # 重新获取聊天列表
+                # 记录已发送的回复内容（用于防止重复回复）
+                if matched_name in self._contact_states:
+                    self._contact_states[matched_name]["last_reply"] = message
+                    self._contact_states[matched_name]["replied"] = True
+                    self._contact_states[matched_name]["is_from_me"] = True
+                
+                # 重新获取聊天列表，更新所有"我发的消息"的联系人状态
+                # 这样可以防止发错人后，错误目标被检测为"有新消息"
                 list_result = self.get_chat_list()
                 if list_result["status"] == "success":
                     for contact in list_result["data"]["contacts"]:
@@ -1156,7 +1162,8 @@ class WeChatManager:
                                 self._contact_states[name] = {
                                     "last_message": contact.get("last_message", ""),
                                     "is_from_me": True,
-                                    "replied": True
+                                    "replied": True,
+                                    "last_reply": ""  # 不是我们发送的
                                 }
                                 logger.debug(f"添加并标记 {name} 为已回复")
                     self._save_states()  # 保存状态
@@ -1207,7 +1214,8 @@ class WeChatManager:
                     self._contact_states[name] = {
                         "last_message": contact.get("last_message", ""),
                         "is_from_me": contact.get("is_from_me", False),
-                        "replied": True  # 首次见到，标记为已回复
+                        "replied": True,  # 首次见到，标记为已回复
+                        "last_reply": ""  # 新增：记录已发送的回复内容
                     }
                     has_changes = True  # 初始化后需要保存状态
                     initialized_count += 1  # 统计初始化数量
@@ -1219,18 +1227,34 @@ class WeChatManager:
                 saved_message = saved_state.get("last_message", "")
                 saved_is_from_me = saved_state.get("is_from_me", False)
                 already_replied = saved_state.get("replied", False)
+                last_reply = saved_state.get("last_reply", "")
 
-                # ===== 关键改进：检查是否手动回复 =====
-                # 如果当前最后一条消息来自我，说明已经回复了（手动或自动）
-                # 无论之前的状态如何，都应该标记为已回复
-                if current_is_from_me and not already_replied:
+                # ===== 关键改进：更强的消息来源判断 =====
+                # 检查当前消息是否是我们之前发送的回复
+                is_our_reply = False
+                if current_is_from_me and last_reply:
+                    # 如果当前消息包含我们发送的回复内容，说明是我们的回复
+                    if last_reply in current_message or current_message in last_reply:
+                        is_our_reply = True
+                        logger.debug(f"检测到我们的回复: {current_message}")
+
+                # ===== 检查是否手动回复 =====
+                # 如果当前最后一条消息来自我（且不是我们的自动回复），说明手动回复了
+                if current_is_from_me and not already_replied and not is_our_reply:
                     # 检测到手动回复
                     self._contact_states[name]["replied"] = True
+                    self._contact_states[name]["is_from_me"] = True
                     has_changes = True
-                    # 不加入 new_messages，因为已经回复了
                     # 更新消息内容
                     self._contact_states[name]["last_message"] = current_message
-                    self._contact_states[name]["is_from_me"] = current_is_from_me
+                    continue
+
+                # ===== 如果是我们的自动回复，更新状态但不当作新消息 =====
+                if is_our_reply:
+                    self._contact_states[name]["replied"] = True
+                    self._contact_states[name]["is_from_me"] = True
+                    self._contact_states[name]["last_message"] = current_message
+                    has_changes = True
                     continue
 
                 # 检测消息是否变化
@@ -1240,9 +1264,10 @@ class WeChatManager:
                     self._contact_states[name]["is_from_me"] = current_is_from_me
                     has_changes = True
 
-                    # 只有对方发的新消息才需要回复
+                    # ===== 关键：只有对方发的新消息才需要回复 =====
                     if not current_is_from_me:
                         self._contact_states[name]["replied"] = False
+                        self._contact_states[name]["last_reply"] = ""  # 清除旧回复，准备接收新回复
                         new_messages.append({
                             "contact": name,
                             "message": current_message,
@@ -1256,12 +1281,19 @@ class WeChatManager:
                 elif not already_replied and not current_is_from_me:
                     # 消息没有变化，但之前标记为未回复，且当前消息不是来自我
                     # 这种情况可能是：对方发了消息，但还没有回复
-                    new_messages.append({
-                        "contact": name,
-                        "message": current_message,
-                        "position": contact.get("position"),
-                        "is_from_me": False
-                    })
+                    # ===== 新增：检查是否已经发送过相同的回复 =====
+                    if last_reply:
+                        # 如果已经发送过回复，跳过
+                        logger.debug(f"{name} 已发送过回复: {last_reply}，跳过")
+                        self._contact_states[name]["replied"] = True
+                        has_changes = True
+                    else:
+                        new_messages.append({
+                            "contact": name,
+                            "message": current_message,
+                            "position": contact.get("position"),
+                            "is_from_me": False
+                        })
 
             # 如果有状态变化，保存到文件
             if has_changes:
