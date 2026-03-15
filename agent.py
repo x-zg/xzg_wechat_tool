@@ -772,34 +772,33 @@ class WeChatManager:
     # ==================== 聊天列表监控功能 ====================
 
     def get_chat_list(self, count: int = 5) -> Dict:
-        """获取左侧聊天列表的前N个联系人
+        """获取微信窗口OCR结果
 
-        通过 OCR 识别左侧聊天列表区域，提取联系人信息。
+        直接返回OCR识别的原始结果，由AI来判断联系人和聊天内容。
+        不再在代码中解析，避免窗口大小变化导致的坐标判断问题。
 
         Args:
-            count: 获取的联系人数量（默认5个）
+            count: 保留参数（兼容旧接口）
 
         Returns:
             Dict: {
                 "status": "success/error",
                 "data": {
-                    "contacts": [
+                    "ocr_results": [
                         {
-                            "index": 0,
-                            "name": "联系人名称",
-                            "last_message": "最后一条消息",
-                            "position": {"x": 100, "y": 150},  # 点击位置
-                            "rect": {"left": 0, "top": 120, "right": 250, "bottom": 170}
+                            "text": "识别的文本",
+                            "confidence": 0.95,
+                            "position": {"x": 100, "y": 200},  # 左上角坐标
+                            "box": [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]  # 四个角坐标
                         },
                         ...
                     ],
-                    "total": 5
+                    "window_rect": {"left": 0, "top": 0, "width": 800, "height": 600},
+                    "total": 10
                 }
             }
         """
         try:
-            from OCR import ocr_endpoint
-
             # 确保窗口就绪
             w, error = self._ensure_window_ready()
             if error:
@@ -810,187 +809,56 @@ class WeChatManager:
             if not rect:
                 return {"status": "error", "message": "无法获取窗口位置"}
 
-            # 截取聊天列表区域
+            # 截取整个微信窗口
             img = self.capture()
             if not img:
                 logger.error("截图失败")
                 return {"status": "error", "message": "截图失败"}
 
-            # 左侧聊天列表区域（相对于图像的坐标）
-            # 图像坐标从 (0, 0) 开始
-            # 微信聊天列表宽度约占窗口宽度的25-30%，最小250，最大350
-            chat_list_width = min(350, max(250, int(rect["width"] * 0.28)))
-            crop_left = 0  # 图像左边缘
-            crop_top = int(rect["height"] * 0.08)  # 跳过搜索框（约占窗口高度8%）
-            crop_right = chat_list_width
-            crop_bottom = img.height  # 图像底部
-
-            # 裁剪左侧聊天列表区域
-            chat_list_img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
-
-            # 保存窗口位置和裁剪参数用于后续计算点击坐标
+            # 保存窗口位置用于后续计算点击坐标
             self._window_rect = rect
-            self._chat_list_crop = {
-                "width": chat_list_width,
-                "top_offset": crop_top
-            }
 
-            # OCR 识别（直接使用 numpy 数组）
+            # OCR 识别整个窗口（直接使用 numpy 数组）
             from rapidocr_onnxruntime import RapidOCR
             ocr = RapidOCR()
-            result, _ = ocr(np.array(chat_list_img))
+            result, _ = ocr(np.array(img))
 
             if not result:
                 logger.error("OCR 未识别到内容")
                 return {"status": "error", "message": "OCR 未识别到内容"}
 
-            # ===== 打印OCR结果 =====
-            logger.info("===== OCR 识别结果 =====")
-            for i, item in enumerate(result):
-                box, text, conf = item
-                logger.info(f"  [{i}] 文本: '{text}' | 置信度: {conf:.2f} | 位置: ({int(box[0][0])}, {int(box[0][1])})")
-            logger.info(f"===== 共识别到 {len(result)} 条文本 =====")
-
-            # 解析 OCR 结果，提取联系人信息
-            # result 格式: [[box, text, confidence], ...]
-            contacts = []
-            current_y = 0
-            contact_height = 65  # 每个联系人项大约 65 像素高度
-
-            # 按位置分组（同一行的文字属于同一个联系人）
-            lines = []
+            # 构建OCR结果列表
+            ocr_results = []
             for item in result:
                 box, text, conf = item
                 # box 是四个点的坐标 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                y_pos = (box[0][1] + box[2][1]) / 2  # 取中心 Y 坐标
-                x_pos = box[0][0]
-
-                # 过滤无效文本（太短的、特殊字符等）
-                if len(text.strip()) < 1:
-                    continue
-
-                lines.append({
+                ocr_results.append({
                     "text": text,
-                    "y": y_pos,
-                    "x": x_pos,
-                    "box": box
+                    "confidence": float(conf),
+                    "position": {"x": int(box[0][0]), "y": int(box[0][1])},  # 左上角坐标
+                    "box": [[int(p[0]), int(p[1])] for p in box]  # 四个角坐标
                 })
 
-            # 按 Y 坐标排序并分组
-            lines.sort(key=lambda l: l["y"])
-
-            # 分组：相邻的行（Y 差距小于 30）属于同一个联系人
-            groups = []
-            current_group = []
-            last_y = -100
-
-            for line in lines:
-                if abs(line["y"] - last_y) < 30:
-                    current_group.append(line)
-                else:
-                    if current_group:
-                        groups.append(current_group)
-                    current_group = [line]
-                last_y = line["y"]
-
-            if current_group:
-                groups.append(current_group)
-
-            # 解析每个分组为联系人信息
-            for i, group in enumerate(groups[:count]):
-                if not group:
-                    continue
-
-                # 按 Y 坐标排序（上面的先处理）
-                group.sort(key=lambda l: l["y"])
-
-                # 微信聊天列表布局：每组第一个是名称，后面是消息
-                # 例如：['小许', '天气'] -> 名称='小许', 消息='天气'
-                name_text = None
-                message_text = None
-                is_from_me = False
-
-                # 第一个（Y 坐标最小）是名称
-                name_text = group[0]["text"].strip()
-
-                # 其余的是消息，取最后一个作为最新消息
-                if len(group) > 1:
-                    message_text = group[-1]["text"].strip()
-
-                # ===== 改进的 is_from_me 判断 =====
-                # 微信聊天列表可能显示的格式：
-                # 1. "我: 消息内容" / "我：消息内容"（中文/英文冒号）
-                # 2. "[我] 消息内容"（部分版本）
-                # 3. "我 消息内容"（无冒号，少见）
-                # 注意：如果消息内容本身包含"我"字（如"我们"），不要误判
-                if message_text:
-                    # 方法1：检测标准前缀
-                    prefixes = ["我:", "我：", "[我]", "【我】"]
-                    for prefix in prefixes:
-                        if message_text.startswith(prefix):
-                            is_from_me = True
-                            message_text = message_text[len(prefix):].strip()
-                            logger.debug(f"检测到 '{prefix}' 前缀，is_from_me=True")
-                            break
-
-                    # 方法2：如果名称和消息中的发送者名称一致，可能是群消息中我发的
-                    # 例如：群名"工作群"，消息显示"我: 好的" -> is_from_me=True
-                    # 但这种情况上面已经处理了
-
-                    # 方法3：检测消息开头是否包含联系人名称（群消息格式）
-                    # 例如："许志国：@老三" 可能表示群消息，发送者是"许志国"
-                    # 这种情况不标记为 is_from_me，因为需要和当前用户名对比
-                    # 由于我们不知道当前登录的微信用户名，暂时无法准确判断
-
-                # 计算点击位置（转换回屏幕坐标）
-                if group and hasattr(self, '_window_rect'):
-                    avg_y = sum(l["y"] for l in group) / len(group)
-                    
-                    # 使用保存的裁剪参数计算坐标
-                    crop_info = getattr(self, '_chat_list_crop', {"width": 280, "top_offset": 60})
-                    chat_list_width = crop_info["width"]
-                    top_offset = crop_info["top_offset"]
-                    
-                    # 点击位置：聊天列表中间位置
-                    click_x = self._window_rect["left"] + chat_list_width // 2
-                    click_y = self._window_rect["top"] + top_offset + avg_y + 30  # 加上裁剪偏移和额外偏移
-
-                    contacts.append({
-                        "index": i,
-                        "name": name_text or f"未知联系人{i+1}",
-                        "last_message": message_text or "",
-                        "is_from_me": is_from_me,  # 新增：标记消息来源
-                        "position": {"x": int(click_x), "y": int(click_y)},
-                        "rect": {
-                            "left": self._window_rect["left"],
-                            "top": int(self._window_rect["top"] + top_offset + avg_y - 20),
-                            "right": self._window_rect["left"] + chat_list_width,
-                            "bottom": int(self._window_rect["top"] + top_offset + avg_y + 50)
-                        }
-                    })
-
-            # ===== 打印解析后的联系人信息 =====
-            logger.info("===== 解析后的联系人列表 =====")
-            for contact in contacts:
-                from_me_str = "[我发的]" if contact["is_from_me"] else "[对方发的]"
-                logger.info(f"  {contact['index']+1}. {contact['name']} {from_me_str}")
-                logger.info(f"     消息: {contact['last_message']}")
-                logger.info(f"     位置: ({contact['position']['x']}, {contact['position']['y']})")
-            logger.info(f"===== 共解析到 {len(contacts)} 个联系人 =====")
+            # 打印OCR结果
+            logger.info("===== OCR 识别结果 =====")
+            for i, item in enumerate(ocr_results):
+                logger.info(f"  [{i}] 文本: '{item['text']}' | 置信度: {item['confidence']:.2f} | 位置: ({item['position']['x']}, {item['position']['y']})")
+            logger.info(f"===== 共识别到 {len(ocr_results)} 条文本 =====")
 
             return {
                 "status": "success",
                 "data": {
-                    "contacts": contacts,
-                    "total": len(contacts)
+                    "ocr_results": ocr_results,
+                    "window_rect": rect,
+                    "total": len(ocr_results)
                 }
             }
 
         except ImportError as e:
             return {"status": "error", "message": f"OCR 模块导入失败: {e}"}
         except Exception as e:
-            logger.error(f"获取聊天列表失败: {e}")
-            return {"status": "error", "message": f"获取聊天列表失败: {str(e)}"}
+            logger.error(f"OCR识别失败: {e}")
+            return {"status": "error", "message": f"OCR识别失败: {str(e)}"}
 
     def _verify_chat_window_open(self) -> bool:
         """验证聊天窗口是否已打开（通过OCR检查是否有发送按钮）
@@ -1040,15 +908,14 @@ class WeChatManager:
             logger.debug(f"验证聊天窗口失败: {e}")
             return False
 
-    def click_contact(self, contact_name: str = None, position: dict = None) -> Dict:
-        """点击联系人进入聊天
+    def click_contact(self, position: dict) -> Dict:
+        """点击指定坐标进入聊天
 
         Args:
-            contact_name: 联系人名称（需要先通过 get_chat_list 获取）
-            position: 点击位置 {"x": 100, "y": 200}
+            position: 点击位置 {"x": 100, "y": 200}（屏幕绝对坐标）
 
         Returns:
-            Dict: {"status": "success/error", "message": "...", "matched_name": "匹配到的联系人名称"}
+            Dict: {"status": "success/error", "message": "..."}
         """
         try:
             # 确保窗口就绪
@@ -1057,88 +924,40 @@ class WeChatManager:
                 return {"status": "error", "message": error}
 
             # 获取点击位置
-            click_x, click_y = None, None
-            contact_display_name = None
-            
-            if position and "x" in position and "y" in position:
-                click_x = position["x"]
-                click_y = position["y"]
-            elif contact_name:
-                # 获取聊天列表查找位置
-                result = self.get_chat_list()
-                if result["status"] != "success":
-                    return result
+            if not position or "x" not in position or "y" not in position:
+                return {"status": "error", "message": "请提供 position 参数，格式: {\"x\": 100, \"y\": 200}"}
 
-                # ===== 改进的匹配逻辑：精确匹配优先，模糊匹配备选 =====
-                matched_contact = None
-                
-                # 优先：精确匹配
-                for contact in result["data"]["contacts"]:
-                    if contact["name"] == contact_name:
-                        matched_contact = contact
-                        break
-                
-                # 备选：模糊匹配（但要求名称包含关系是双向的或目标较短）
-                if not matched_contact:
-                    for contact in result["data"]["contacts"]:
-                        # 模糊匹配：联系人名称包含目标，或目标包含联系人名称
-                        if contact_name in contact["name"] or contact["name"] in contact_name:
-                            # 额外检查：避免误匹配（如"小许"匹配到"小许2"）
-                            # 只有当目标名称较短时才允许包含匹配
-                            if len(contact_name) <= len(contact["name"]):
-                                matched_contact = contact
-                                logger.debug(f"模糊匹配: '{contact_name}' -> '{contact['name']}'")
-                                break
-                
-                if matched_contact:
-                    click_x = matched_contact["position"]["x"]
-                    click_y = matched_contact["position"]["y"]
-                    contact_display_name = matched_contact["name"]
-                else:
-                    return {"status": "error", "message": f"未找到联系人: {contact_name}"}
-            else:
-                return {"status": "error", "message": "请提供 contact_name 或 position 参数"}
+            click_x = position["x"]
+            click_y = position["y"]
 
-            # ===== 点击联系人并验证窗口状态（关键！）=====
-            # 微信联系人列表有开关切换行为：
-            # - 如果不在聊天窗口，点击会打开
-            # - 如果已在聊天窗口，点击会关闭
-            # 因此需要验证并处理
-            
-            max_attempts = 2  # 最多尝试2次点击
-            
+            # 点击并验证窗口状态
+            max_attempts = 2
+
             for attempt in range(max_attempts):
-                # 点击联系人
                 pyautogui.click(click_x, click_y)
                 time.sleep(0.5)
-                
-                # 验证聊天窗口是否打开
+
                 if self._verify_chat_window_open():
-                    # 窗口已打开，成功
                     return {
-                        "status": "success", 
-                        "message": f"已进入与 {contact_display_name} 的聊天窗口",
-                        "matched_name": contact_display_name  # 返回匹配到的名称
+                        "status": "success",
+                        "message": f"已点击位置 ({click_x}, {click_y}) 并进入聊天窗口"
                     }
                 else:
-                    # 窗口未打开，可能是因为之前已经在这个窗口，点击导致关闭了
-                    # 如果不是最后一次尝试，继续点击重新打开
                     if attempt < max_attempts - 1:
-                        time.sleep(0.3)  # 等待一下再重试
+                        time.sleep(0.3)
                         continue
-            
-            # 所有尝试都失败
+
             return {"status": "error", "message": "无法打开聊天窗口，请检查微信状态"}
 
         except Exception as e:
-            logger.error(f"点击联系人失败: {e}")
-            return {"status": "error", "message": f"点击联系人失败: {str(e)}"}
+            logger.error(f"点击失败: {e}")
+            return {"status": "error", "message": f"点击失败: {str(e)}"}
 
-    def auto_reply_to_contact(self, contact_name: str, message: str) -> Dict:
-        """自动回复指定联系人
+    def auto_reply_to_contact(self, position: dict, message: str) -> Dict:
+        """自动回复指定位置的联系人
 
         Args:
-            contact_name: 联系人名称
+            position: 点击位置 {"x": 100, "y": 200}（屏幕绝对坐标）
             message: 回复内容
 
         Returns:
@@ -1151,52 +970,16 @@ class WeChatManager:
                 return {"status": "error", "message": error}
 
             # 1. 点击联系人进入聊天
-            click_result = self.click_contact(contact_name=contact_name)
+            click_result = self.click_contact(position=position)
             if click_result["status"] != "success":
                 return click_result
-
-            # 获取实际匹配到的联系人名称
-            matched_name = click_result.get("matched_name", contact_name)
 
             time.sleep(0.3)
 
             # 2. 发送消息
             success, err = self.send_message(message)
             if success:
-                # ===== 关键：发送成功后，记录回复内容并更新状态 =====
-                time.sleep(0.5)  # 等待微信更新聊天列表
-                
-                # 记录已发送的回复内容（用于防止重复回复）
-                if matched_name in self._contact_states:
-                    self._contact_states[matched_name]["last_reply"] = message
-                    self._contact_states[matched_name]["replied"] = True
-                    self._contact_states[matched_name]["is_from_me"] = True
-                
-                # 重新获取聊天列表，更新所有"我发的消息"的联系人状态
-                # 这样可以防止发错人后，错误目标被检测为"有新消息"
-                list_result = self.get_chat_list()
-                if list_result["status"] == "success":
-                    for contact in list_result["data"]["contacts"]:
-                        name = contact["name"]
-                        # 如果最后一条消息是我发的，标记为已回复
-                        if contact.get("is_from_me", False):
-                            if name in self._contact_states:
-                                self._contact_states[name]["replied"] = True
-                                self._contact_states[name]["last_message"] = contact.get("last_message", "")
-                                self._contact_states[name]["is_from_me"] = True
-                                logger.debug(f"已标记 {name} 为已回复（我发的消息）")
-                            else:
-                                # 如果联系人不在状态中，添加并标记为已回复
-                                self._contact_states[name] = {
-                                    "last_message": contact.get("last_message", ""),
-                                    "is_from_me": True,
-                                    "replied": True,
-                                    "last_reply": ""  # 不是我们发送的
-                                }
-                                logger.debug(f"添加并标记 {name} 为已回复")
-                    self._save_states()  # 保存状态
-                
-                return {"status": "success", "message": f"已回复 {matched_name}: {message}"}
+                return {"status": "success", "message": f"已发送消息: {message}"}
             else:
                 return {"status": "error", "message": f"发送失败: {err}"}
 
@@ -1205,142 +988,43 @@ class WeChatManager:
             return {"status": "error", "message": f"自动回复失败: {str(e)}"}
 
     def check_new_messages(self) -> Dict:
-        """检查是否有新消息（单次检测，不自动回复）
+        """检查微信窗口状态，返回OCR结果供AI判断
+
+        直接返回OCR识别的原始结果，由AI来判断是否有新消息以及联系人信息。
+        不再在代码中解析，避免窗口大小变化导致的坐标判断问题。
 
         Returns:
             Dict: {
                 "status": "success",
                 "data": {
-                    "has_new_messages": True/False,
-                    "new_messages": [...],
-                    "all_contacts": [...],
-                    "is_first_init": True/False,  # 是否是首次初始化
-                    "initialized_count": 0  # 本次初始化的联系人数量
+                    "ocr_results": [...],  # OCR识别结果
+                    "window_rect": {...},  # 窗口位置
+                    "total": 10,  # OCR结果数量
+                    "is_first_init": True/False  # 是否是首次初始化（用于定时任务）
                 }
             }
         """
         try:
-            # 获取当前聊天列表状态
-            current_result = self.get_chat_list()
-            if current_result["status"] != "success":
-                return current_result
-
-            current_contacts = current_result["data"]["contacts"]
-            new_messages = []
-
-            # 检查每个联系人是否有新消息
-            has_changes = False
-            
-            # ===== 新增：跟踪是否是首次初始化 =====
+            # ===== 跟踪是否是首次初始化 =====
             is_first_init = len(self._contact_states) == 0
-            initialized_count = 0
-
-            # 初始化所有联系人的状态（首次运行）
-            for contact in current_contacts:
-                name = contact["name"]
-                if name not in self._contact_states:
-                    self._contact_states[name] = {
-                        "last_message": contact.get("last_message", ""),
-                        "is_from_me": contact.get("is_from_me", False),
-                        "replied": True,  # 首次见到，标记为已回复
-                        "last_reply": ""  # 新增：记录已发送的回复内容
-                    }
-                    has_changes = True  # 初始化后需要保存状态
-                    initialized_count += 1  # 统计初始化数量
-            for contact in current_contacts:
-                name = contact["name"]
-                current_message = contact.get("last_message", "")
-                current_is_from_me = contact.get("is_from_me", False)
-                saved_state = self._contact_states.get(name, {})
-                saved_message = saved_state.get("last_message", "")
-                saved_is_from_me = saved_state.get("is_from_me", False)
-                already_replied = saved_state.get("replied", False)
-                last_reply = saved_state.get("last_reply", "")
-
-                # ===== 关键改进：更强的消息来源判断 =====
-                # 检查当前消息是否是我们之前发送的回复
-                is_our_reply = False
-                if current_is_from_me and last_reply:
-                    # 如果当前消息包含我们发送的回复内容，说明是我们的回复
-                    if last_reply in current_message or current_message in last_reply:
-                        is_our_reply = True
-                        logger.debug(f"检测到我们的回复: {current_message}")
-
-                # ===== 检查是否手动回复 =====
-                # 如果当前最后一条消息来自我（且不是我们的自动回复），说明手动回复了
-                if current_is_from_me and not already_replied and not is_our_reply:
-                    # 检测到手动回复
-                    self._contact_states[name]["replied"] = True
-                    self._contact_states[name]["is_from_me"] = True
-                    has_changes = True
-                    # 更新消息内容
-                    self._contact_states[name]["last_message"] = current_message
-                    continue
-
-                # ===== 如果是我们的自动回复，更新状态但不当作新消息 =====
-                if is_our_reply:
-                    self._contact_states[name]["replied"] = True
-                    self._contact_states[name]["is_from_me"] = True
-                    self._contact_states[name]["last_message"] = current_message
-                    has_changes = True
-                    continue
-
-                # 检测消息是否变化
-                if current_message != saved_message or current_is_from_me != saved_is_from_me:
-                    # 更新保存的消息
-                    self._contact_states[name]["last_message"] = current_message
-                    self._contact_states[name]["is_from_me"] = current_is_from_me
-                    has_changes = True
-
-                    # ===== 关键：只有对方发的新消息才需要回复 =====
-                    if not current_is_from_me:
-                        self._contact_states[name]["replied"] = False
-                        self._contact_states[name]["last_reply"] = ""  # 清除旧回复，准备接收新回复
-                        new_messages.append({
-                            "contact": name,
-                            "message": current_message,
-                            "position": contact.get("position"),
-                            "is_from_me": False
-                        })
-                    else:
-                        # 当前消息来自我，标记为已回复
-                        self._contact_states[name]["replied"] = True
-
-                elif not already_replied and not current_is_from_me:
-                    # 消息没有变化，但之前标记为未回复，且当前消息不是来自我
-                    # 这种情况可能是：对方发了消息，但还没有回复
-                    # ===== 新增：检查是否已经发送过相同的回复 =====
-                    if last_reply:
-                        # 如果已经发送过回复，跳过
-                        logger.debug(f"{name} 已发送过回复: {last_reply}，跳过")
-                        self._contact_states[name]["replied"] = True
-                        has_changes = True
-                    else:
-                        new_messages.append({
-                            "contact": name,
-                            "message": current_message,
-                            "position": contact.get("position"),
-                            "is_from_me": False
-                        })
-
-            # 如果有状态变化，保存到文件
-            if has_changes:
+            
+            # 首次初始化时，标记一个标记位（用于后续判断）
+            if is_first_init:
+                self._contact_states["__initialized__"] = True
                 self._save_states()
 
-            # ===== 关键：如果是首次初始化，has_new_messages 应该为 false =====
-            # 首次初始化时，所有联系人都是"新发现"，但不应该当作"新消息"
-            if is_first_init and initialized_count > 0:
-                new_messages = []  # 清空新消息列表
+            # 获取OCR结果
+            ocr_result = self.get_chat_list()
+            if ocr_result["status"] != "success":
+                return ocr_result
 
             return {
                 "status": "success",
                 "data": {
-                    "has_new_messages": len(new_messages) > 0,
-                    "new_messages": new_messages,
-                    "all_contacts": current_contacts,
-                    "total_new": len(new_messages),
-                    "is_first_init": is_first_init,  # 新增：是否是首次初始化
-                    "initialized_count": initialized_count  # 新增：初始化的联系人数量
+                    "ocr_results": ocr_result["data"]["ocr_results"],
+                    "window_rect": ocr_result["data"]["window_rect"],
+                    "total": ocr_result["data"]["total"],
+                    "is_first_init": is_first_init
                 }
             }
 
@@ -1425,13 +1109,13 @@ def get_chat_list(count=5):
     """获取聊天列表"""
     return _manager.get_chat_list(count=count)
 
-def click_contact(contact_name=None, position=None):
-    """点击联系人"""
-    return _manager.click_contact(contact_name=contact_name, position=position)
+def click_contact(position):
+    """点击指定坐标"""
+    return _manager.click_contact(position=position)
 
-def auto_reply(contact_name, message):
-    """自动回复联系人"""
-    return _manager.auto_reply_to_contact(contact_name=contact_name, message=message)
+def auto_reply(position, message):
+    """自动回复指定位置的联系人"""
+    return _manager.auto_reply_to_contact(position=position, message=message)
 
 def check_new_messages():
     """检查是否有新消息"""
@@ -1498,14 +1182,14 @@ if __name__ == "__main__":
     p_chat_list.add_argument("--count", type=int, default=5, help="获取数量")
 
     # click_contact
-    p_click_contact = subparsers.add_parser("click_contact", help="点击联系人")
-    p_click_contact.add_argument("--name", type=str, default=None, help="联系人名称")
-    p_click_contact.add_argument("--x", type=int, default=None, help="点击X坐标")
-    p_click_contact.add_argument("--y", type=int, default=None, help="点击Y坐标")
+    p_click_contact = subparsers.add_parser("click_contact", help="点击指定坐标进入聊天")
+    p_click_contact.add_argument("--x", type=int, required=True, help="点击X坐标")
+    p_click_contact.add_argument("--y", type=int, required=True, help="点击Y坐标")
 
     # auto_reply
-    p_auto_reply = subparsers.add_parser("auto_reply", help="自动回复联系人")
-    p_auto_reply.add_argument("--name", type=str, required=True, help="联系人名称")
+    p_auto_reply = subparsers.add_parser("auto_reply", help="自动回复指定位置的联系人")
+    p_auto_reply.add_argument("--x", type=int, required=True, help="点击X坐标")
+    p_auto_reply.add_argument("--y", type=int, required=True, help="点击Y坐标")
     p_auto_reply.add_argument("--message", type=str, required=True, help="回复内容")
 
     # check_new_messages
@@ -1560,10 +1244,11 @@ if __name__ == "__main__":
     elif args.action == "get_chat_list":
         result = get_chat_list(args.count)
     elif args.action == "click_contact":
-        position = {"x": args.x, "y": args.y} if args.x and args.y else None
-        result = click_contact(contact_name=args.name, position=position)
+        position = {"x": args.x, "y": args.y}
+        result = click_contact(position=position)
     elif args.action == "auto_reply":
-        result = auto_reply(contact_name=args.name, message=args.message)
+        position = {"x": args.x, "y": args.y}
+        result = auto_reply(position=position, message=args.message)
     elif args.action == "check_new_messages":
         result = check_new_messages()
     elif args.action == "get_contact_states":
