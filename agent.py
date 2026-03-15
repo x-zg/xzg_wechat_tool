@@ -610,9 +610,9 @@ class WeChatManager:
 
         logger.debug(f"窗口位置: ({rect['left']}, {rect['top']}), 大小: ({rect['width']}, {rect['height']})")
 
-        # 2. 点击输入框
+        # 2. 点击输入框（使用相对比例）
         input_x = rect["left"] + rect["width"] // 2
-        input_y = rect["bottom"] - 60
+        input_y = rect["bottom"] - int(rect["height"] * 0.08)  # 输入框在底部约8%位置
         self.click(input_x, input_y)
         time.sleep(0.2)
 
@@ -679,9 +679,9 @@ class WeChatManager:
 
         time.sleep(0.3)
 
-        # 4. 点击输入框
+        # 4. 点击输入框（使用相对比例）
         input_x = rect["left"] + rect["width"] // 2
-        input_y = rect["bottom"] - 60
+        input_y = rect["bottom"] - int(rect["height"] * 0.08)  # 输入框在底部约8%位置
         self.click(input_x, input_y)
         time.sleep(0.3)
 
@@ -818,17 +818,22 @@ class WeChatManager:
 
             # 左侧聊天列表区域（相对于图像的坐标）
             # 图像坐标从 (0, 0) 开始
-            chat_list_width = 280
+            # 微信聊天列表宽度约占窗口宽度的25-30%，最小250，最大350
+            chat_list_width = min(350, max(250, int(rect["width"] * 0.28)))
             crop_left = 0  # 图像左边缘
-            crop_top = 60  # 跳过搜索框
+            crop_top = int(rect["height"] * 0.08)  # 跳过搜索框（约占窗口高度8%）
             crop_right = chat_list_width
             crop_bottom = img.height  # 图像底部
 
             # 裁剪左侧聊天列表区域
             chat_list_img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
 
-            # 保存窗口位置用于后续计算点击坐标
+            # 保存窗口位置和裁剪参数用于后续计算点击坐标
             self._window_rect = rect
+            self._chat_list_crop = {
+                "width": chat_list_width,
+                "top_offset": crop_top
+            }
 
             # OCR 识别（直接使用 numpy 数组）
             from rapidocr_onnxruntime import RapidOCR
@@ -933,9 +938,15 @@ class WeChatManager:
                 # 计算点击位置（转换回屏幕坐标）
                 if group and hasattr(self, '_window_rect'):
                     avg_y = sum(l["y"] for l in group) / len(group)
-                    # 转换回屏幕坐标：窗口左边 + 裁剪偏移 + 相对坐标
-                    click_x = self._window_rect["left"] + 140  # 列表中间位置
-                    click_y = self._window_rect["top"] + 60 + avg_y + 30  # 加上裁剪偏移
+                    
+                    # 使用保存的裁剪参数计算坐标
+                    crop_info = getattr(self, '_chat_list_crop', {"width": 280, "top_offset": 60})
+                    chat_list_width = crop_info["width"]
+                    top_offset = crop_info["top_offset"]
+                    
+                    # 点击位置：聊天列表中间位置
+                    click_x = self._window_rect["left"] + chat_list_width // 2
+                    click_y = self._window_rect["top"] + top_offset + avg_y + 30  # 加上裁剪偏移和额外偏移
 
                     contacts.append({
                         "index": i,
@@ -945,9 +956,9 @@ class WeChatManager:
                         "position": {"x": int(click_x), "y": int(click_y)},
                         "rect": {
                             "left": self._window_rect["left"],
-                            "top": int(self._window_rect["top"] + 60 + avg_y - 20),
-                            "right": self._window_rect["left"] + 280,
-                            "bottom": int(self._window_rect["top"] + 60 + avg_y + 50)
+                            "top": int(self._window_rect["top"] + top_offset + avg_y - 20),
+                            "right": self._window_rect["left"] + chat_list_width,
+                            "bottom": int(self._window_rect["top"] + top_offset + avg_y + 50)
                         }
                     })
 
@@ -983,12 +994,13 @@ class WeChatManager:
                 return False
             
             # 裁剪右侧底部区域（发送按钮通常在右下角）
+            # 使用相对比例，适应不同窗口大小
             # 微信聊天窗口的发送按钮位置：右侧底部
             send_button_region = img.crop((
                 rect["width"] // 2,  # 左边界：窗口中间
-                rect["height"] - 150,  # 上边界：底部150像素以上
+                int(rect["height"] * 0.75),  # 上边界：窗口高度75%处
                 rect["width"],  # 右边界：窗口右边
-                rect["height"] - 30  # 下边界：底部30像素以上
+                int(rect["height"] * 0.95)  # 下边界：窗口高度95%处
             ))
             
             # OCR识别
