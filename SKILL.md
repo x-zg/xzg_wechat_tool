@@ -434,7 +434,64 @@ python {baseDir}/agent.py get_contact_states
 
 ---
 
-### 3.15 reset_contact_states - 重置联系人状态
+### 3.15 save_contact_state - 保存单个联系人状态
+
+**功能：** 保存单个联系人的状态（供AI对比消息变化使用）
+
+**调用：**
+```bash
+python {baseDir}/agent.py save_contact_state --name "张三" --state '{"last_message":"你好","last_time":"10:30"}'
+```
+
+**参数说明：**
+
+||| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|||--------|------|------|--------|------|
+||| --name | string | **是** | 无 | 联系人名称 |
+||| --state | string | **是** | 无 | 状态JSON字符串 |
+
+**state 字段建议：**
+```json
+{
+  "last_message": "最后一条消息内容",
+  "last_time": "消息时间",
+  "sender": "对方/我",
+  "replied": false
+}
+```
+
+---
+
+### 3.16 get_contact_state - 获取单个联系人状态
+
+**功能：** 获取单个联系人的状态（用于对比消息是否变化）
+
+**调用：**
+```bash
+python {baseDir}/agent.py get_contact_state --name "张三"
+```
+
+**参数说明：**
+
+||| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|||--------|------|------|--------|------|
+||| --name | string | **是** | 无 | 联系人名称 |
+
+**返回值：**
+```json
+{
+  "status": "success",
+  "data": {
+    "contact_name": "张三",
+    "state": {"last_message": "你好", "last_time": "10:30"},
+    "exists": true
+  }
+}
+```
+
+---
+
+### 3.17 reset_contact_states - 重置联系人状态
 
 **功能：** 重置所有联系人状态
 
@@ -462,7 +519,9 @@ python {baseDir}/agent.py reset_contact_states
 || **click_contact** | 点击指定坐标 | --x, --y | 无 |
 || **auto_reply** | 自动回复 | --x, --y, --message | 无 |
 || **check_new_messages** | 检查新消息(OCR原始结果) | 无 | 无 |
-|| **get_contact_states** | 获取联系人状态 | 无 | 无 |
+|| **get_contact_states** | 获取所有联系人状态 | 无 | 无 |
+|| **save_contact_state** | 保存单个联系人状态 | --name, --state | 无 |
+|| **get_contact_state** | 获取单个联系人状态 | --name | 无 |
 || **reset_contact_states** | 重置联系人状态 | 无 | 无 |
 
 ---
@@ -628,37 +687,81 @@ python {baseDir}/agent.py reset_contact_states
 
 步骤1: 重置状态
   → 调用 reset_contact_states()
-  
-步骤2: 初始化当前状态
+
+步骤2: 获取当前OCR结果
   → 调用 check_new_messages()
-  → AI记录当前所有联系人状态
-  
-步骤3: 设置定时任务
+
+步骤3: AI分析并保存联系人状态
+  → AI解析左侧聊天列表，识别所有联系人
+  → 对每个联系人调用 save_contact_state() 保存当前状态
+  → 示例：save_contact_state --name "张三" --state '{"last_message":"你好","sender":"对方"}'
+
+步骤4: 设置定时任务
   → 使用 cron.add 工具设置下次检查时间
   → schedule.at = 当前时间 + 间隔时间（ISO 8601 格式）
   → payload.kind = "agentTurn"
   → payload.message = "检查微信新消息"
 
-【定时任务触发时】必须先检查状态！
+【定时任务触发时】对比消息变化！
 
-步骤1: 检查状态是否存在
-  → 调用 get_contact_states()
-  → 如果为空：初始化后结束，不回复消息
-  
-步骤2: 获取OCR结果
+步骤1: 获取当前OCR结果（只获取一次！）
   → 调用 check_new_messages()
-  → 返回 is_first_init 字段
-  
-步骤3: 如果 is_first_init=true
-  → 本次是初始化，不回复消息
-  → 设置下一次定时任务
-  → 结束
+  → AI解析左侧聊天列表，识别所有联系人及其最新消息
 
-步骤4: AI分析OCR结果
-  → 判断是否有新消息
-  → 如果有，计算坐标并回复
+步骤2: 逐一对比联系人状态
+  → 对每个联系人：
+    1. 调用 get_contact_state --name "联系人名" 获取上次保存的状态
+    2. 对比当前消息和上次保存的 last_message
+    3. 如果消息内容变化且是对方发的 → 记录为新消息
 
-步骤5: 设置下一次定时任务
+步骤3: 批量处理新消息（关键！）
+  ⚠️ 重要：必须一次性处理所有新消息，中间不要再次获取OCR！
+
+  → 在 AI 内存中记录所有新消息的联系人名称和点击坐标
+  → 按从上到下的顺序逐一回复
+  → 调用 auto_reply 发送回复
+  → 回复完成后调用 save_contact_state 更新该联系人状态
+
+步骤4: 设置下一次定时任务
+```
+
+**⚠️ 为什么不能中间获取 OCR？**
+
+```
+错误做法：
+1. OCR 获取状态，发现 A、B、C 有新消息
+2. 点击 A 回复 → 右侧窗口变为 A 的聊天
+3. 再次 OCR 获取状态 → ❌ 错误！
+   - 右侧窗口已经不是初始状态
+   - 左侧列表可能已经滚动变化
+   - 之前计算的 B、C 坐标可能失效
+
+正确做法：
+1. OCR 获取状态，发现 A、B、C 有新消息
+2. 在 AI 内存中记录：A(坐标1), B(坐标2), C(坐标3)
+3. 直接用记录的坐标：
+   - auto_reply --x 坐标1 --y 坐标1 --message "回复A"
+   - auto_reply --x 坐标2 --y 坐标2 --message "回复B"
+   - auto_reply --x 坐标3 --y 坐标3 --message "回复C"
+4. 回复完成后，一次性更新所有联系人状态
+```
+
+**⚠️ 左侧列表坐标计算的稳定性**
+
+```
+左侧聊天列表的特点：
+1. 列表宽度相对固定（约为窗口宽度的 28%）
+2. 每个联系人项高度约 60-80 像素
+3. 点击坐标：X = window_left + 列表宽度 * 0.5，Y = 从 OCR 结果中获取
+
+坐标计算方法：
+1. 从 OCR 结果中找到联系人名称文本
+2. 获取该文本的 Y 坐标中心点：Y = (box[0][1] + box[2][1]) / 2
+3. 点击坐标：X = window_rect.left + window_rect.width * 0.14，Y = Y
+
+注意：
+- 即使右侧窗口变化，左侧列表的相对位置不会大变
+- 但如果回复后联系人上移（因为最新消息），需要重新 OCR 获取新坐标
 ```
 
 ---
@@ -701,3 +804,5 @@ python {baseDir}/agent.py reset_contact_states
 8. **流程完整性**：操作需要遵循完整的流程步骤
 9. **状态持久化**：联系人状态保存在 `wechat_contact_states.json` 文件中
 10. **定时任务初始化**：设置定时任务时必须先初始化状态
+11. **批量处理新消息**：获取一次 OCR 后，在内存中记录所有新消息坐标，然后批量回复，中间不要再获取 OCR
+12. **中文编码**：脚本输出使用 UTF-8 编码，调用方需使用 UTF-8 解码输出

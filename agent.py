@@ -1042,6 +1042,50 @@ class WeChatManager:
             }
         }
 
+    def save_contact_state(self, contact_name: str, state: dict) -> Dict:
+        """保存单个联系人的状态（供AI调用）
+
+        Args:
+            contact_name: 联系人名称
+            state: 状态字典，可包含：
+                - last_message: 最后一条消息内容
+                - last_message_time: 最后消息时间
+                - replied: 是否已回复
+                - custom: 自定义数据
+
+        Returns:
+            Dict: {"status": "success/error", "message": "..."}
+        """
+        if not contact_name:
+            return {"status": "error", "message": "请提供联系人名称"}
+
+        self._contact_states[contact_name] = state
+        self._save_states()
+
+        return {"status": "success", "message": f"已保存联系人 '{contact_name}' 的状态"}
+
+    def get_contact_state(self, contact_name: str) -> Dict:
+        """获取单个联系人的状态（供AI调用）
+
+        Args:
+            contact_name: 联系人名称
+
+        Returns:
+            Dict: {"status": "success", "data": {"state": {...}, "exists": true/false}}
+        """
+        if not contact_name:
+            return {"status": "error", "message": "请提供联系人名称"}
+
+        state = self._contact_states.get(contact_name)
+        return {
+            "status": "success",
+            "data": {
+                "contact_name": contact_name,
+                "state": state,
+                "exists": contact_name in self._contact_states
+            }
+        }
+
     def reset_contact_states(self) -> Dict:
         """重置所有联系人状态"""
         self._contact_states = {}
@@ -1125,6 +1169,14 @@ def get_contact_states():
     """获取联系人状态"""
     return _manager.get_contact_states()
 
+def save_contact_state(contact_name, state):
+    """保存单个联系人状态"""
+    return _manager.save_contact_state(contact_name=contact_name, state=state)
+
+def get_contact_state(contact_name):
+    """获取单个联系人状态"""
+    return _manager.get_contact_state(contact_name=contact_name)
+
 def reset_contact_states():
     """重置联系人状态"""
     return _manager.reset_contact_states()
@@ -1198,6 +1250,15 @@ if __name__ == "__main__":
     # get_contact_states
     subparsers.add_parser("get_contact_states", help="获取联系人状态")
 
+    # save_contact_state
+    p_save_state = subparsers.add_parser("save_contact_state", help="保存单个联系人状态")
+    p_save_state.add_argument("--name", type=str, required=True, help="联系人名称")
+    p_save_state.add_argument("--state", type=str, required=True, help="状态JSON字符串")
+
+    # get_contact_state
+    p_get_state = subparsers.add_parser("get_contact_state", help="获取单个联系人状态")
+    p_get_state.add_argument("--name", type=str, required=True, help="联系人名称")
+
     # reset_contact_states
     subparsers.add_parser("reset_contact_states", help="重置联系人状态")
 
@@ -1253,6 +1314,14 @@ if __name__ == "__main__":
         result = check_new_messages()
     elif args.action == "get_contact_states":
         result = get_contact_states()
+    elif args.action == "save_contact_state":
+        try:
+            state_dict = json.loads(args.state)
+            result = save_contact_state(contact_name=args.name, state=state_dict)
+        except json.JSONDecodeError:
+            result = {"status": "error", "message": "state 参数必须是有效的 JSON 字符串"}
+    elif args.action == "get_contact_state":
+        result = get_contact_state(contact_name=args.name)
     elif args.action == "reset_contact_states":
         result = reset_contact_states()
 
