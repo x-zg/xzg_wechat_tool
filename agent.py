@@ -844,6 +844,13 @@ class WeChatManager:
                 logger.error("OCR 未识别到内容")
                 return {"status": "error", "message": "OCR 未识别到内容"}
 
+            # ===== 打印OCR结果 =====
+            logger.info("===== OCR 识别结果 =====")
+            for i, item in enumerate(result):
+                box, text, conf = item
+                logger.info(f"  [{i}] 文本: '{text}' | 置信度: {conf:.2f} | 位置: ({int(box[0][0])}, {int(box[0][1])})")
+            logger.info(f"===== 共识别到 {len(result)} 条文本 =====")
+
             # 解析 OCR 结果，提取联系人信息
             # result 格式: [[box, text, confidence], ...]
             contacts = []
@@ -961,6 +968,15 @@ class WeChatManager:
                             "bottom": int(self._window_rect["top"] + top_offset + avg_y + 50)
                         }
                     })
+
+            # ===== 打印解析后的联系人信息 =====
+            logger.info("===== 解析后的联系人列表 =====")
+            for contact in contacts:
+                from_me_str = "[我发的]" if contact["is_from_me"] else "[对方发的]"
+                logger.info(f"  {contact['index']+1}. {contact['name']} {from_me_str}")
+                logger.info(f"     消息: {contact['last_message']}")
+                logger.info(f"     位置: ({contact['position']['x']}, {contact['position']['y']})")
+            logger.info(f"===== 共解析到 {len(contacts)} 个联系人 =====")
 
             return {
                 "status": "success",
