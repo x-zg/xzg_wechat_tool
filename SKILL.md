@@ -302,6 +302,19 @@ python {baseDir}/agent.py check_new_messages
 
 **参数说明：** 无参数
 
+**⚠️ 重要：数据持久化说明**
+
+```
+聊天记录保存在本地文件 wechat_chat_records.json 中：
+- 程序启动时会自动加载该文件
+- 之前保存的数据会一直保留
+- 如果不初始化，saved_records 会返回历史数据（可能不是当前会话的）
+
+【首次使用或需要重新开始监控时】必须先初始化：
+  → 调用 reset_chat_records() 清空历史数据
+  → 然后 check_new_messages() 的 saved_records 才是空的
+```
+
 **返回值：**
 
 ```json
