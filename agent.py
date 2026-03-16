@@ -10,13 +10,15 @@ import io
 import os
 
 # ============== 统一编码处理（解决 Windows 控制台编码问题）==============
-# Windows CMD/PowerShell 默认使用 GBK (代码页 936)
-_OUTPUT_ENCODING = 'gbk'
-
 if sys.platform == 'win32':
-    # 强制 stdout/stderr 为 GBK，适配 Windows CMD
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='gbk', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='gbk', errors='replace')
+    import ctypes
+    # 使用 Windows API 设置控制台代码页为 UTF-8
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleOutputCP(65001)
+    kernel32.SetConsoleCP(65001)
+
+# 输出编码标记（供其他模块使用）
+_OUTPUT_ENCODING = 'utf-8'
 
 import base64
 import time
@@ -39,9 +41,8 @@ import win32con
 import win32api
 import win32process
 import numpy as np
-import ctypes
 
-# 获取 user32 API
+# 获取 user32 API (ctypes 已在文件开头导入)
 user32 = ctypes.windll.user32
 
 # ============== 配置日志输出编码为 UTF-8 ==============
