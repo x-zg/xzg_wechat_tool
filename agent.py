@@ -60,7 +60,7 @@ logger = logging.getLogger("WeChat_Tool")
 
 class WeChatManager:
     """微信客户端管理器"""
-    
+
     WAKE_UP_HOTKEY = ('ctrl', 'alt', 'w')
     STATE_FILE = "wechat_chat_records.json"  # 聊天记录持久化文件
 
@@ -111,21 +111,21 @@ class WeChatManager:
         # 微信窗口标题通常是：微信、WeChat、Weixin，或者以这些开头的标题
         # 排除 IDE/编辑器窗口
         script_name = os.path.basename(__file__).lower()
-        
+
         # IDE 和编辑器关键词（用于排除）
-        IDE_KEYWORDS = [".py", "pycharm", "idea", "vscode", "visual studio", 
+        IDE_KEYWORDS = [".py", "pycharm", "idea", "vscode", "visual studio",
                         "sublime", "atom", "notepad", "editor", "ide"]
 
         for keyword in ["微信", "WeChat", "Weixin"]:
             windows = gw.getWindowsWithTitle(keyword)
             for w in windows:
                 title_lower = w.title.lower()
-                
+
                 # 排除脚本名或 agent.py
                 if script_name in title_lower or "agent.py" in title_lower:
                     logger.debug(f"跳过脚本相关窗口: title={w.title}")
                     continue
-                
+
                 # 排除 IDE/编辑器窗口
                 is_ide = False
                 for ide_keyword in IDE_KEYWORDS:
@@ -133,20 +133,20 @@ class WeChatManager:
                         # 特殊处理：微信标题可能包含这些词（罕见），但尺寸应该匹配
                         is_ide = True
                         break
-                
+
                 if is_ide:
                     logger.debug(f"跳过 IDE 窗口: title={w.title}")
                     continue
-                
+
                 # 微信窗口特征：尺寸较大，且标题通常是 "微信" 或 "WeChat"
                 # 允许标题以微信关键词开头
                 title_starts_with_keyword = title_lower.startswith(keyword.lower())
-                
+
                 # 如果标题以关键词开头，直接接受
                 if title_starts_with_keyword and w.width > 200 and w.height > 200:
                     logger.debug(f"找到微信窗口: title={w.title}, size=({w.width}x{w.height})")
                     return w
-                
+
                 # 否则，检查窗口类名（微信主窗口类名：WeChatMainWndForPC）
                 try:
                     hwnd = w._hWnd if hasattr(w, '_hWnd') else None
@@ -158,13 +158,13 @@ class WeChatManager:
                                 return w
                 except Exception:
                     pass
-                
+
                 # 最后：如果标题完全是关键词（精确匹配）
                 if title_lower.strip() in ["微信", "wechat", "weixin"]:
                     if w.width > 200 and w.height > 200:
                         logger.debug(f"找到微信窗口(精确匹配): title={w.title}")
                         return w
-                    
+
                 logger.debug(f"跳过窗口(不匹配): title={w.title}, size=({w.width}x{w.height})")
         return None
 
@@ -658,7 +658,7 @@ class WeChatManager:
 
         # 2. 点击输入框（使用相对比例）
         input_x = rect["left"] + rect["width"] // 2
-        input_y = rect["bottom"] - int(rect["height"] * 0.08)  # 输入框在底部约8%位置
+        input_y = rect["bottom"] - int(rect["height"] * 0.15)  # 输入框在底部约8%位置
         self.click(input_x, input_y)
         time.sleep(0.2)
 
@@ -908,7 +908,7 @@ class WeChatManager:
 
     def _verify_chat_window_open(self) -> bool:
         """验证聊天窗口是否已打开（通过OCR检查是否有发送按钮）
-        
+
         Returns:
             bool: True=聊天窗口已打开，False=聊天窗口未打开
         """
@@ -917,12 +917,12 @@ class WeChatManager:
             rect = self.get_window_rect()
             if not rect:
                 return False
-            
+
             # 截图
             img = self.capture()
             if not img:
                 return False
-            
+
             # 裁剪右侧底部区域（发送按钮通常在右下角）
             # 使用相对比例，适应不同窗口大小
             # 微信聊天窗口的发送按钮位置：右侧底部
@@ -932,24 +932,24 @@ class WeChatManager:
                 rect["width"],  # 右边界：窗口右边
                 int(rect["height"] * 0.95)  # 下边界：窗口高度95%处
             ))
-            
+
             # OCR识别
             from rapidocr_onnxruntime import RapidOCR
             ocr = RapidOCR()
             result, _ = ocr(np.array(send_button_region))
-            
+
             if not result:
                 return False
-            
+
             # 检查是否有"发送"按钮
             # 微信发送按钮通常显示"发送(S)"或"发送"
             for item in result:
                 text = item[1]  # item格式: [box, text, confidence]
                 if "发送" in text:
                     return True
-            
+
             return False
-            
+
         except Exception as e:
             logger.debug(f"验证聊天窗口失败: {e}")
             return False
@@ -1294,16 +1294,16 @@ class WeChatManager:
 
         # 找出所有非名称的文本
         other_items = [item for item in group if item['text'] != name_item['text']]
-        
+
         if not other_items:
             return ""  # 没有其他文本
 
         # 按 X 坐标排序，找 X 最大的（通常是时间）
         other_items_by_x = sorted(other_items, key=lambda t: t['x'], reverse=True)
-        
+
         # 检查 X 最大的项是否是时间
         max_x_item = other_items_by_x[0]
-        
+
         if is_time_format(max_x_item['text']):
             # 有时间，检查剩余项是否是消息预览
             remaining = [item for item in other_items if item['text'] != max_x_item['text']]
@@ -1321,7 +1321,7 @@ class WeChatManager:
                 # X 坐标差距小于 50 认为是消息预览
                 if item['x'] - name_x < 50 and not is_time_format(item['text']):
                     return item['text']
-            
+
             # 如果都不是，返回 Y 最小的（排除名称后）
             other_items.sort(key=lambda t: t['y'])
             return other_items[0]['text'] if other_items else ""
