@@ -67,7 +67,8 @@ class WeChatManager:
     SKIP_CONTACTS = [
         "文件传输助手", "File Transfer", "文件传输",
         "公众号", "服务号", "微信支付",
-        "腾讯", "系统", "官方"
+        "腾讯", "系统", "官方",
+        "折叠聊天", "折叠的聊天"  # 折叠聊天功能
     ]
 
     def __init__(self):
@@ -1042,10 +1043,11 @@ class WeChatManager:
         return False
 
     # ==================== 布局常量（适应不同窗口大小）====================
-    # 微信左侧联系人列表宽度约 230px，这里使用固定宽度 + 动态调整
-    LEFT_LIST_WIDTH = 250          # 左侧联系人列表宽度（固定）
-    LEFT_LIST_MIN_RATIO = 0.25     # 最小比例（小窗口时）
-    LEFT_LIST_MAX_RATIO = 0.35     # 最大比例（大窗口时）
+    # 微信左侧联系人列表：名称约 230px，时间约 330px
+    # 这里使用固定宽度 + 动态调整
+    LEFT_LIST_WIDTH = 350          # 左侧联系人列表宽度（包含时间）
+    LEFT_LIST_MIN_RATIO = 0.35     # 最小比例（小窗口时）
+    LEFT_LIST_MAX_RATIO = 0.40     # 最大比例（大窗口时）
 
     # 消息区域参数
     CHAT_AREA_MARGIN = 60          # 聊天区域边距
@@ -1086,8 +1088,10 @@ class WeChatManager:
             window_width: 窗口宽度
 
         Returns:
-            list: 联系人列表 [{"name": "张三", "x": 125, "y": 200}, ...]
+            list: 联系人列表 [{"name": "张三", "x": 125, "y": 200, "preview": "你好"}, ...]
         """
+        import re
+
         # 计算左侧边界
         left_boundary = self._get_left_boundary(window_width)
 
@@ -1104,22 +1108,20 @@ class WeChatManager:
                 # 排除搜索框
                 if '搜索' in text:
                     continue
-                # 排除纯时间格式
-                if len(text) <= 12 and (text.count(':') == 1 or '昨天' in text or '前天' in text or '周' in text):
-                    continue
                 left_texts.append({'x': x, 'y': y, 'text': text})
 
         # 按 Y 坐标排序
         left_texts.sort(key=lambda t: t['y'])
 
         # 分组：每个联系人条目高度约 64 像素
-        # Y 坐标差距小于 30 的认为是同一组（名称+预览消息）
+        # 名称和预览消息的 Y 差通常 < 30px，相邻联系人的 Y 差 > 50px
+        # 使用 40px 作为阈值，确保同一联系人的内容在同一组
         groups = []
         current_group = []
         prev_y = -100
 
         for item in left_texts:
-            if item['y'] - prev_y > 30:  # 新的一组
+            if item['y'] - prev_y > 40:  # 新的一组
                 if current_group:
                     groups.append(current_group)
                 current_group = [item]
@@ -1130,23 +1132,198 @@ class WeChatManager:
         if current_group:
             groups.append(current_group)
 
-        # 从每组中提取联系人名称（Y 坐标最小的）
+
+
+
+        # 从每组中解析联系人信息
         contacts = []
         for group in groups:
-            group.sort(key=lambda t: t['y'])
+            group.sort(key=lambda t: t['y'])  # 按 Y 坐标排序
+
+            # 过滤条件1：组内只有单个文本，可能是右侧消息（正常联系人应该有名称+时间+预览）
+            if len(group) < 2:
+                continue
+
+            # 名称是 Y 坐标最小的（最上面那行）
+            # 微信联系人条目结构：名称在上，消息预览在下
             name_item = group[0]
 
-            # 检查是否应该跳过
-            if not self._should_skip_contact(name_item['text']):
-                # 长度限制：联系人名称通常 1-20 个字符
-                if 1 <= len(name_item['text']) <= 20:
-                    contacts.append({
-                        'name': name_item['text'],
-                        'x': name_item['x'],
-                        'y': name_item['y']
-                    })
+            # 过滤条件1.5：名称不能是时间格式（右侧消息的时间可能被错误识别为名称）
+            if self._is_time_format(name_item['text']):
+                continue
+
+            # 检查整组是否应该跳过
+            should_skip_group = False
+            for item in group:
+                if self._should_skip_contact(item['text']):
+                    should_skip_group = True
+                    break
+
+            if should_skip_group:
+                continue  # 跳过整组（包括公众号的消息预览）
+
+            # 过滤条件2：检查组内是否有时间格式（正常联系人条目应该有时间）
+            time_item = self._find_time_item(group)
+            if not time_item:
+                continue  # 没有时间，可能是右侧聊天消息，跳过
+
+            # 过滤条件3：名称和时间应该在同一行（Y 差值小）
+            # 微信联系人列表中，名称和时间 Y 坐标几乎相同（Y 差 < 10）
+            name_y = name_item['y']
+            time_y = time_item['y']
+            if abs(time_y - name_y) > 10:
+                continue  # 名称和时间不在同一行，可能是右侧内容
+
+            # 长度限制：联系人名称通常 1-20 个字符
+            if 1 <= len(name_item['text']) <= 20:
+                # 解析消息预览
+                preview = self._extract_message_preview(group, name_item)
+
+                contacts.append({
+                    'name': name_item['text'],
+                    'x': name_item['x'],
+                    'y': name_item['y'],
+                    'preview': preview,
+                    'time': time_item['text']  # 添加时间字段
+                })
 
         return contacts
+
+    def _is_time_format(self, text: str) -> bool:
+        """检查文本是否是时间格式
+
+        Args:
+            text: 待检查的文本
+
+        Returns:
+            bool: 是否是时间格式
+        """
+        import re
+
+        time_patterns = [
+            r'^\d{1,2}:\d{2}$',           # 17:00, 9:30
+            r'^昨天', r'^前天',            # 昨天, 前天, 昨天14:39
+            r'^今天',                      # 今天
+            r'^刚刚',                      # 刚刚
+            r'^\d+分钟前$',                # 5分钟前
+            r'^星期[一二三四五六日]$',       # 星期一
+            r'^周[一二三四五六日]$',         # 周一
+            r'^\d{1,2}月\d{1,2}日$',       # 3月15日
+        ]
+
+        for pattern in time_patterns:
+            if re.match(pattern, text):
+                return True
+
+        return False
+
+    def _find_time_item(self, group: list) -> dict:
+        """找到组内的时间项
+
+        Args:
+            group: 同一组的文本列表
+
+        Returns:
+            dict: 时间项，如果没有则返回 None
+        """
+        import re
+
+        time_patterns = [
+            r'^\d{1,2}:\d{2}$',           # 17:00, 9:30
+            r'^昨天', r'^前天',            # 昨天, 前天, 昨天14:39
+            r'^今天',                      # 今天
+            r'^刚刚', r'^刚刚',            # 刚刚
+            r'^\d+分钟前$',                # 5分钟前
+            r'^星期[一二三四五六日]$',       # 星期一
+            r'^周[一二三四五六日]$',         # 周一
+            r'^\d{1,2}月\d{1,2}日$',       # 3月15日
+        ]
+
+        # 按 X 坐标排序，找 X 最大的（时间通常在右侧）
+        group_by_x = sorted(group, key=lambda t: t['x'], reverse=True)
+
+        for item in group_by_x:
+            text = item['text']
+            # 1. 先检查标准时间格式
+            for pattern in time_patterns:
+                if re.match(pattern, text):
+                    return item
+            # 2. 检查是否可能是 OCR 误识别的时间（X 坐标大，文本短）
+            # 时间通常在右侧（X > 280），且文本较短（< 15 字符）
+            if item['x'] > 280 and len(text) <= 15:
+                # 检查是否和名称在同一行（Y 差值 < 10）
+                name_y = group[0]['y']  # 名称是 Y 最小的
+                if abs(item['y'] - name_y) <= 10:
+                    return item
+
+        return None
+
+    def _extract_message_preview(self, group: list, name_item: dict) -> str:
+        """从分组中提取消息预览
+
+        微信联系人条目结构：
+        - 联系人名称：X坐标最小
+        - 消息预览：在名称下方，X坐标和名称相近
+        - 时间：X坐标最大（在右侧），如 "17:00"、"昨天"、"星期四"
+
+        Args:
+            group: 同一组的文本列表
+            name_item: 联系人名称项
+
+        Returns:
+            str: 消息预览内容，如果没有则返回空字符串
+        """
+        import re
+
+        # 时间格式的正则表达式
+        time_patterns = [
+            r'^\d{1,2}:\d{2}$',           # 17:00, 9:30
+            r'^昨天$', r'^前天$',          # 昨天, 前天
+            r'^星期[一二三四五六日]$',       # 星期一
+            r'^周[一二三四五六日]$',         # 周一
+            r'^\d{1,2}月\d{1,2}日$',       # 3月15日
+        ]
+
+        def is_time_format(text: str) -> bool:
+            """判断是否是时间格式"""
+            for pattern in time_patterns:
+                if re.match(pattern, text):
+                    return True
+            return False
+
+        # 找出所有非名称的文本
+        other_items = [item for item in group if item['text'] != name_item['text']]
+        
+        if not other_items:
+            return ""  # 没有其他文本
+
+        # 按 X 坐标排序，找 X 最大的（通常是时间）
+        other_items_by_x = sorted(other_items, key=lambda t: t['x'], reverse=True)
+        
+        # 检查 X 最大的项是否是时间
+        max_x_item = other_items_by_x[0]
+        
+        if is_time_format(max_x_item['text']):
+            # 有时间，检查剩余项是否是消息预览
+            remaining = [item for item in other_items if item['text'] != max_x_item['text']]
+            if remaining:
+                # 剩余的按 Y 排序，取 Y 最小的（最靠近名称的）
+                remaining.sort(key=lambda t: t['y'])
+                return remaining[0]['text']
+            else:
+                return ""  # 只有时间，没有消息预览
+        else:
+            # X 最大的不是时间格式
+            # 检查是否是消息预览（X 坐标和名称相近）
+            name_x = name_item['x']
+            for item in other_items_by_x:
+                # X 坐标差距小于 50 认为是消息预览
+                if item['x'] - name_x < 50 and not is_time_format(item['text']):
+                    return item['text']
+            
+            # 如果都不是，返回 Y 最小的（排除名称后）
+            other_items.sort(key=lambda t: t['y'])
+            return other_items[0]['text'] if other_items else ""
 
     def parse_opponent_message_from_ocr(self, ocr_results: list, window_width: int, window_height: int) -> str:
         """从 OCR 结果中解析对方的最后一条消息
@@ -1232,19 +1409,28 @@ class WeChatManager:
         return True
 
     def check_new_messages(self) -> Dict:
-        """检查微信窗口状态，返回OCR结果供AI判断
+        """检查微信联系人列表，返回解析后的联系人信息
 
-        返回OCR识别的原始结果，由AI来判断联系人信息和聊天记录。
+        返回联系人列表（带预览消息）和已保存的聊天记录，供AI对比判断是否有新消息。
 
         Returns:
             Dict: {
                 "status": "success",
                 "data": {
-                    "ocr_results": [...],
-                    "window_rect": {...},
-                    "total": 10,
-                    "saved_contacts_order": [...],  # 上次保存的联系人顺序
-                    "is_first_init": True/False
+                    "contacts": [
+                        {
+                            "name": "联系人名称",
+                            "x": 125, "y": 200,
+                            "preview": "预览消息",
+                            "time": "16:09"
+                        }
+                    ],
+                    "saved_records": {
+                        "contacts": {name: {last_opponent_message, last_opponent_time}},
+                        "contacts_order": [...]
+                    },
+                    "is_first_init": True/False,
+                    "window_rect": {...}
                 }
             }
         """
@@ -1254,26 +1440,116 @@ class WeChatManager:
             if ocr_result["status"] != "success":
                 return ocr_result
 
-            # 检查是否是首次初始化（没有保存过聊天记录）
-            is_first_init = len(self._chat_records) == 0
+            ocr_results = ocr_result["data"]["ocr_results"]
+            window_rect = ocr_result["data"]["window_rect"]
+            window_width = window_rect["width"]
 
-            # 获取上次保存的联系人顺序
-            saved_contacts_order = self._chat_records.get("contacts_order", [])
+            # 解析联系人列表（带预览消息）
+            contacts = self.parse_contacts_from_ocr(ocr_results, window_width)
+
+            # 为每个联系人添加屏幕绝对坐标（用于点击）
+            for contact in contacts:
+                contact["screen_x"] = window_rect["left"] + contact["x"]
+                contact["screen_y"] = window_rect["top"] + contact["y"]
+
+            # 检查是否是首次初始化
+            is_first_init = len(self._chat_records) == 0
 
             return {
                 "status": "success",
                 "data": {
-                    "ocr_results": ocr_result["data"]["ocr_results"],
-                    "window_rect": ocr_result["data"]["window_rect"],
-                    "total": ocr_result["data"]["total"],
-                    "saved_contacts_order": saved_contacts_order,
-                    "is_first_init": is_first_init
+                    "contacts": contacts,
+                    "saved_records": self._chat_records,
+                    "is_first_init": is_first_init,
+                    "window_rect": window_rect
                 }
             }
 
         except Exception as e:
             logger.error(f"检查新消息失败: {e}")
             return {"status": "error", "message": f"检查新消息失败: {str(e)}"}
+
+    def verify_chat_window(self, expected_name: str) -> Dict:
+        """验证当前聊天窗口是否是指定联系人
+
+        通过OCR识别对话框顶部的联系人名称，验证是否与预期一致。
+
+        Args:
+            expected_name: 预期的联系人名称
+
+        Returns:
+            Dict: {
+                "status": "success/error",
+                "data": {
+                    "actual_name": "识别到的名称",
+                    "expected_name": "预期名称",
+                    "matched": True/False
+                }
+            }
+        """
+        try:
+            # 获取窗口位置
+            rect = self.get_window_rect()
+            if not rect:
+                return {"status": "error", "message": "无法获取窗口位置"}
+
+            # 截图并OCR
+            img = self.capture()
+            if not img:
+                return {"status": "error", "message": "截图失败"}
+
+            from rapidocr_onnxruntime import RapidOCR
+            ocr = RapidOCR()
+            result, _ = ocr(np.array(img))
+
+            if not result:
+                return {"status": "error", "message": "OCR未识别到内容"}
+
+            # 构建OCR结果
+            ocr_results = []
+            for item in result:
+                box, text, conf = item
+                ocr_results.append({
+                    "text": text,
+                    "confidence": float(conf),
+                    "position": {"x": int(box[0][0]), "y": int(box[0][1])}
+                })
+
+            # 聊天窗口顶部名称位置：Y < 100, X 在右侧聊天区域
+            left_boundary = self._get_left_boundary(rect["width"])
+            top_area_texts = []
+            for item in ocr_results:
+                x = item["position"]["x"]
+                y = item["position"]["y"]
+                text = item["text"]
+                # 顶部区域（Y < 100），右侧聊天区域（X > 左侧边界）
+                if y < 100 and x > left_boundary:
+                    # 排除一些非名称文本
+                    if text not in ["搜索", "发送", "更多", "...", "×"]:
+                        top_area_texts.append({"x": x, "y": y, "text": text})
+
+            # 找到顶部最左边的文本作为名称（通常名称在顶部最左边）
+            if top_area_texts:
+                top_area_texts.sort(key=lambda t: t["x"])
+                actual_name = top_area_texts[0]["text"]
+            else:
+                actual_name = ""
+
+            # 匹配检查（支持部分匹配，如 "CF-李壮" 匹配 "CF-李壮@百博电商"）
+            matched = expected_name in actual_name or actual_name in expected_name
+
+            return {
+                "status": "success",
+                "data": {
+                    "actual_name": actual_name,
+                    "expected_name": expected_name,
+                    "matched": matched
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"验证聊天窗口失败: {e}")
+            return {"status": "error", "message": f"验证聊天窗口失败: {str(e)}"}
 
     def get_chat_records(self) -> Dict:
         """获取当前所有联系人的聊天记录"""
@@ -1347,6 +1623,85 @@ class WeChatManager:
                 "exists": contact_name in contacts
             }
         }
+
+    def update_preview_after_reply(self, contact_name: str) -> Dict:
+        """回复完成后更新联系人的预览消息
+
+        重要：在回复消息后调用此方法，重新OCR获取当前预览消息并更新记录。
+        防止自己的回复消息变成预览后，下次检测时误判为新消息。
+
+        Args:
+            contact_name: 联系人名称
+
+        Returns:
+            Dict: {"status": "success/error", "data": {"preview": "新的预览消息", "time": "时间"}}
+        """
+        try:
+            # 1. 等待微信界面更新（回复后预览需要一点时间更新）
+            time.sleep(0.5)
+
+            # 2. 重新获取OCR结果
+            ocr_result = self.get_chat_list()
+            if ocr_result["status"] != "success":
+                return {"status": "error", "message": f"获取OCR失败: {ocr_result.get('message', '')}"}
+
+            ocr_results = ocr_result["data"]["ocr_results"]
+            window_rect = ocr_result["data"]["window_rect"]
+            window_width = window_rect["width"]
+
+            # 3. 解析联系人列表
+            contacts = self.parse_contacts_from_ocr(ocr_results, window_width)
+
+            # 4. 查找目标联系人
+            target_contact = None
+            for contact in contacts:
+                # 支持部分匹配
+                if contact_name in contact['name'] or contact['name'] in contact_name:
+                    target_contact = contact
+                    break
+
+            if not target_contact:
+                # 如果找不到，可能联系人已不在当前显示范围
+                # 保持原记录不变，返回警告
+                return {
+                    "status": "warning",
+                    "message": f"未在当前列表找到联系人 '{contact_name}'，保持原记录不变",
+                    "data": {"contact_name": contact_name}
+                }
+
+            # 5. 更新预览消息和时间
+            new_preview = target_contact.get('preview', '')
+            new_time = target_contact.get('time', '')
+
+            # 更新记录
+            if "contacts" not in self._chat_records:
+                self._chat_records["contacts"] = {}
+
+            # 保留原有的其他字段，只更新预览和时间
+            existing_record = self._chat_records["contacts"].get(contact_name, {})
+            self._chat_records["contacts"][contact_name] = {
+                "last_opponent_message": new_preview,  # 用新预览更新
+                "last_opponent_time": new_time,
+                "last_update_time": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            self._save_records()
+
+            logger.info(f"已更新联系人 '{contact_name}' 的预览: {new_preview}")
+
+            return {
+                "status": "success",
+                "message": f"已更新联系人 '{contact_name}' 的预览消息",
+                "data": {
+                    "contact_name": contact_name,
+                    "preview": new_preview,
+                    "time": new_time
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"更新预览失败: {e}")
+            return {"status": "error", "message": f"更新预览失败: {str(e)}"}
 
     def update_contacts_order(self, contacts_order: list) -> Dict:
         """更新联系人顺序列表
@@ -1467,6 +1822,10 @@ def check_new_messages():
     """检查是否有新消息"""
     return _manager.check_new_messages()
 
+def verify_chat_window(expected_name):
+    """验证当前聊天窗口是否是指定联系人"""
+    return _manager.verify_chat_window(expected_name=expected_name)
+
 def get_chat_records():
     """获取所有联系人聊天记录"""
     return _manager.get_chat_records()
@@ -1483,6 +1842,10 @@ def save_chat_record(contact_name, last_opponent_message, last_opponent_time=Non
 def get_chat_record(contact_name):
     """获取单个联系人聊天记录"""
     return _manager.get_chat_record(contact_name=contact_name)
+
+def update_preview_after_reply(contact_name):
+    """回复完成后更新联系人的预览消息（防止误判）"""
+    return _manager.update_preview_after_reply(contact_name=contact_name)
 
 def update_contacts_order(contacts_order):
     """更新联系人顺序"""
@@ -1589,12 +1952,20 @@ if __name__ == "__main__":
     p_get_record = subparsers.add_parser("get_chat_record", help="获取单个联系人聊天记录")
     p_get_record.add_argument("--name", type=str, required=True, help="联系人名称")
 
+    # update_preview_after_reply
+    p_update_preview = subparsers.add_parser("update_preview_after_reply", help="回复完成后更新预览消息")
+    p_update_preview.add_argument("--name", type=str, required=True, help="联系人名称")
+
     # update_contacts_order
     p_update_order = subparsers.add_parser("update_contacts_order", help="更新联系人顺序")
     p_update_order.add_argument("--order", type=str, required=True, help="联系人顺序JSON数组")
 
     # reset_chat_records
     subparsers.add_parser("reset_chat_records", help="重置所有聊天记录")
+
+    # verify_chat_window
+    p_verify = subparsers.add_parser("verify_chat_window", help="验证当前聊天窗口是否是指定联系人")
+    p_verify.add_argument("--expected_name", type=str, required=True, help="预期的联系人名称")
 
     # 兼容旧接口
     # get_contact_states
@@ -1673,6 +2044,8 @@ if __name__ == "__main__":
         )
     elif args.action == "get_chat_record":
         result = get_chat_record(contact_name=args.name)
+    elif args.action == "update_preview_after_reply":
+        result = update_preview_after_reply(contact_name=args.name)
     elif args.action == "update_contacts_order":
         try:
             order_list = json.loads(args.order)
@@ -1681,6 +2054,8 @@ if __name__ == "__main__":
             result = {"status": "error", "message": "order 参数必须是有效的 JSON 数组"}
     elif args.action == "reset_chat_records":
         result = reset_chat_records()
+    elif args.action == "verify_chat_window":
+        result = verify_chat_window(expected_name=args.expected_name)
     elif args.action == "get_contact_states":
         result = get_contact_states()
     elif args.action == "save_contact_state":

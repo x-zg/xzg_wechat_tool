@@ -1,7 +1,7 @@
 ---
 name: wechat_tool
 description: 微信客户端自动化控制工具，支持截图、OCR识别、点击、输入、滚动、发送消息、检查新消息等操作
-version: 4.1.0
+version: 4.2.0
 author: xzg
 permissions: 系统操作权限（控制微信窗口、鼠标键盘操作）
 ---
@@ -518,6 +518,74 @@ python {baseDir}/agent.py reset_chat_records
 
 ---
 
+### 3.19 update_preview_after_reply - 回复后更新预览消息
+
+**功能：** 回复完成后更新联系人的预览消息，防止自己的回复变成预览导致下次误判为新消息
+
+**调用：**
+```bash
+python {baseDir}/agent.py update_preview_after_reply --name "张三"
+```
+
+**参数说明：**
+
+|||| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+||||--------|------|------|--------|------|
+|||| --name | string | **是** | 无 | 联系人名称 |
+
+**返回值：**
+```json
+{
+  "status": "success",
+  "message": "已更新联系人 '张三' 的预览消息",
+  "data": {
+    "contact_name": "张三",
+    "preview": "[我]: 收到了",
+    "time": "16:30"
+  }
+}
+```
+
+**重要说明：**
+- ⚠️ **必须在回复消息后立即调用此方法**
+- 只更新指定的单个联系人，不影响其他人的记录
+- 防止自己的回复消息变成预览后，下次检测时误判为新消息
+
+---
+
+### 3.20 verify_chat_window - 验证聊天窗口
+
+**功能：** 验证当前聊天窗口是否是指定联系人（通过OCR识别对话框顶部名称）
+
+**调用：**
+```bash
+python {baseDir}/agent.py verify_chat_window --expected_name "张三"
+```
+
+**参数说明：**
+
+|||| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+||||--------|------|------|--------|------|
+|||| --expected_name | string | **是** | 无 | 预期的联系人名称 |
+
+**返回值：**
+```json
+{
+  "status": "success",
+  "data": {
+    "actual_name": "张三",
+    "expected_name": "张三",
+    "matched": true
+  }
+}
+```
+
+**用途：**
+- 点击联系人进入聊天窗口后，验证是否进入了正确的对话框
+- 支持部分匹配（如 "CF-李壮" 匹配 "CF-李壮@百博电商"）
+
+---
+
 ## 4. 支持的动作列表
 
 || 动作 | 说明 | 必需参数 | 可选参数 |
@@ -540,6 +608,8 @@ python {baseDir}/agent.py reset_chat_records
 || **get_chat_record** | 获取单个聊天记录 | --name | 无 |
 || **update_contacts_order** | 更新联系人顺序 | --order | 无 |
 || **reset_chat_records** | 重置所有聊天记录 | 无 | 无 |
+|| **update_preview_after_reply** | 回复后更新预览 | --name | 无 |
+|| **verify_chat_window** | 验证聊天窗口 | --expected_name | 无 |
 
 ---
 
@@ -548,12 +618,17 @@ python {baseDir}/agent.py reset_chat_records
 ### 5.1 整体思路
 
 ```
-不再根据左侧列表的消息预览判断，而是：
-1. 依次点击左侧前5个联系人
-2. 查看右侧聊天记录，准确区分"我发的"和"对方发的"
-3. 保存每个联系人的最后一条对方消息
-4. 下次检查时对比，如果有新消息则回复
+核心流程：
+1. 调用 check_new_messages() 获取当前联系人列表（已解析出名称、预览、时间）
+2. 对比 saved_records 中保存的预览消息
+3. 发现新消息 → 点击联系人 → 验证窗口 → 回复 → 更新预览
+4. 新联系人（本地无记录）且有预览消息 → 当做新消息处理
 ```
+
+**关键改进：**
+- 不再需要依次点击每个联系人查看聊天记录
+- 直接从联系人列表的预览消息判断是否有新消息
+- 预览消息可能被截断，需要回复完整聊天内容时才点击进入对话框
 
 ### 5.2 初始化流程（第一次启动监控）
 
@@ -561,69 +636,46 @@ python {baseDir}/agent.py reset_chat_records
 步骤1: 重置聊天记录
   → 调用 reset_chat_records()
 
-步骤2: 获取OCR结果
+步骤2: 获取当前联系人列表
   → 调用 check_new_messages()
-  → 返回 ocr_results, window_rect, saved_contacts_order, is_first_init
+  → 返回 contacts（已解析的联系人列表，包含 name, preview, time, screen_x, screen_y）
+  → is_first_init = true
 
-步骤3: AI分析左侧联系人列表
-  → 根据X坐标识别左侧聊天列表区域（使用固定宽度 250px 或动态调整）
-  → 按Y坐标排序，找出前5个联系人
-  → 跳过不需要处理的联系人（文件传输助手、公众号等）
-  → 计算每个联系人的点击坐标
+步骤3: 保存所有联系人的预览消息
+  对每个联系人：
+    a. 调用 save_chat_record --name "联系人名" --message "预览消息" --time "时间"
+    b. 不需要点击进入对话框（预览消息已足够）
 
-步骤4: 依次点击联系人，查看聊天记录
-  对每个联系人（顺序 0-4）：
-    a. 调用 click_contact --x 坐标 --y 坐标
-    b. 调用 get_chat_list() 获取右侧聊天记录
-    c. AI分析右侧聊天记录：
-       - 根据气泡位置区分"我发的"和"对方发的"
-       - X坐标 > window_width * 0.6 → 我发的
-       - X坐标 < window_width * 0.5 → 对方发的
-    d. 找到对方的最后一条消息
-    e. 调用 save_chat_record 保存：
-       --name "联系人名" --message "对方消息" --time "时间" --order 顺序
-
-步骤5: 更新联系人顺序
+步骤4: 更新联系人顺序（可选）
   → 调用 update_contacts_order --order '["张三", "李四", ...]'
 
-步骤6: 设置定时任务
+步骤5: 设置定时任务
 ```
 
 ### 5.3 定时检查流程
 
 ```
-步骤1: 获取OCR结果
+步骤1: 获取当前联系人列表
   → 调用 check_new_messages()
-  → 返回 saved_contacts_order（上次保存的联系人顺序）
+  → 返回 contacts（当前联系人列表）和 saved_records（上次保存的记录）
 
-步骤2: AI分析当前左侧联系人列表
-  → 识别当前前5个联系人名称
-  → 对比 saved_contacts_order：
-
-  【情况A：联系人顺序有变化】
-  - 如果有新的联系人出现在前5个 → 说明有新消息
-  - 新联系人就是发送新消息的人
-
-  【情况B：联系人顺序没变】
-  - 需要依次点击联系人，对比聊天记录
-
-步骤3: 依次点击联系人，对比聊天记录
+步骤2: 对比预览消息找出新消息
   对每个联系人：
-    a. 调用 get_chat_record --name "联系人名" 获取上次保存的消息
-    b. 点击联系人，获取右侧聊天记录
-    c. 找到对方的最后一条消息
-    d. 对比：
-       - 如果消息内容变化 → 对方发了新消息
-       - 如果消息内容相同 → 没有新消息
+    a. 检查联系人名称是否在 saved_records["contacts"] 中
+    b. 如果不存在 → 新联系人，当做新消息处理
+    c. 如果存在 → 对比 preview 和 saved_records["contacts"][name]["last_opponent_message"]
+    d. 如果 preview 不同 → 有新消息
 
-步骤4: 回复新消息
-  → 对有新消息的联系人调用 auto_reply
-  → 更新聊天记录 save_chat_record
+步骤3: 处理新消息
+  对每个有新消息的联系人：
+    a. 调用 click_contact --x screen_x --y screen_y 进入对话框
+    b. 调用 verify_chat_window --expected_name "联系人名" 验证窗口
+    c. （可选）获取完整聊天记录判断是否需要回复
+    d. 调用 send_message --message "回复内容" 发送回复
+    e. ⚠️ 立即调用 update_preview_after_reply --name "联系人名" 更新预览
+       （防止自己的回复变成预览导致下次误判）
 
-步骤5: 更新联系人顺序
-  → 调用 update_contacts_order
-
-步骤6: 设置下一次定时任务
+步骤4: 设置下一次定时任务
 ```
 
 ### 5.4 区分消息来源的关键规则
@@ -815,15 +867,15 @@ python {baseDir}/agent.py reset_chat_records
 【第一次启动监控时】必须初始化！
 
 步骤1: 重置状态
-  → 调用 reset_contact_states()
+  → 调用 reset_chat_records()
 
-步骤2: 获取当前OCR结果
+步骤2: 获取当前联系人列表
   → 调用 check_new_messages()
+  → 返回 contacts（已解析的联系人列表）
 
-步骤3: AI分析并保存联系人状态
-  → AI解析左侧聊天列表，识别所有联系人
-  → 对每个联系人调用 save_contact_state() 保存当前状态
-  → 示例：save_contact_state --name "张三" --state '{"last_message":"你好","sender":"对方"}'
+步骤3: 保存所有联系人的预览消息
+  对每个联系人：
+    → 调用 save_chat_record --name "联系人名" --message "预览消息" --time "时间"
 
 步骤4: 设置定时任务
   → 使用 cron.add 工具设置下次检查时间
@@ -833,9 +885,9 @@ python {baseDir}/agent.py reset_chat_records
 
 【定时任务触发时】对比消息变化！
 
-步骤1: 获取当前OCR结果（只获取一次！）
+步骤1: 获取当前联系人列表
   → 调用 check_new_messages()
-  → AI解析左侧聊天列表，识别所有联系人及其最新消息
+  → 返回 contacts 和 saved_records
 
 步骤2: ⚠️ 过滤不需要处理的联系人
 
@@ -843,51 +895,41 @@ python {baseDir}/agent.py reset_chat_records
   - 文件传输助手、File Transfer、文件传输
   - 公众号、服务号、微信支付
   - 腾讯、系统、官方
+  - 折叠聊天、折叠的聊天
   - 包含以上关键词的联系人名称
 
-步骤3: ⚠️ 判断消息来源（关键！避免回复自己！）
+步骤3: 对比预览消息
 
-  对每个联系人，按以下规则判断：
+  对每个联系人：
+    a. 检查联系人名称是否在 saved_records["contacts"] 中
+    b. 如果不存在 → 新联系人，当做新消息处理
+    c. 如果存在 → 对比 preview 和 saved_records["contacts"][name]["last_opponent_message"]
+    d. 如果 preview 不同 → 有新消息
 
-  【规则1 - 消息预览格式判断】
-  如果消息预览以"我:"开头（如"我: 好的"）→ 我发的消息，跳过此联系人
-  如果消息预览是"[语音]"且前面没有"我:" → 可能是新消息，需要确认
-  如果消息预览是普通文本且不以"我:"开头 → 对方的消息
-
-  【规则2 - 对比上次状态】
-  调用 get_contact_state --name "联系人名" 获取上次保存的状态
-  如果当前消息 != 上次保存的 last_message：
-    - 如果 sender="我" → 我发的新消息，跳过
-    - 如果 sender="对方" 或 sender 为空 → 对方的新消息，需要回复
-
-  【规则3 - 不确定时保守处理】
-  如果无法确定消息来源 → 假设是我发的消息，不回复
-
-步骤4: 批量处理新消息（关键！）
+步骤4: 批量处理新消息
   ⚠️ 重要：必须一次性处理所有新消息，中间不要再次获取OCR！
 
-  → 在 AI 内存中记录所有【对方发的新消息】的联系人名称和点击坐标
-  → 按从上到下的顺序逐一回复
-  → 调用 auto_reply 发送回复
-  → 回复完成后调用 save_contact_state 更新该联系人状态
+  → 在 AI 内存中记录所有【有新消息】的联系人名称和坐标
+  → 按从上到下的顺序逐一处理：
+    - auto_reply --x screen_x --y screen_y --message "回复内容"
+    - update_preview_after_reply --name "联系人名"
 
 步骤5: 设置下一次定时任务
 ```
 
-**⚠️ 避免回复自己的关键检查点：**
+**⚠️ 关于新联系人的处理：**
 
 ```
-【保存联系人状态时的正确格式】
-save_contact_state --name "张三" --state '{"last_message":"你好","sender":"对方"}'
-save_contact_state --name "李四" --state '{"last_message":"我: 好的","sender":"我"}'
+【新联系人判断】
+如果联系人名称不在 saved_records["contacts"] 中：
+- 这是新出现在列表中的联系人
+- 通常是因为对方发来了新消息
+- 应该当做新消息处理
 
-【判断流程】
-1. 读取消息预览
-2. 如果预览以"我:"开头 → sender="我"，跳过
-3. 如果预览不以"我:"开头 → sender="对方"，检查是否需要回复
-4. 对比上次状态：
-   - 如果 sender 上次是"我"，这次变成"对方" → 对方发了新消息
-   - 如果 sender 上次是"对方"，消息内容变了 → 对方发了新消息
+【示例】
+假设 saved_records 中有：张三、李四、王五
+当前列表出现：张三、李四、赵六（赵六是新联系人）
+→ 赵六不在保存记录中 → 当做新消息处理
 ```
 
 **⚠️ 为什么不能中间获取 OCR？**
@@ -906,27 +948,23 @@ save_contact_state --name "李四" --state '{"last_message":"我: 好的","sende
 2. 在 AI 内存中记录：A(坐标1), B(坐标2), C(坐标3)
 3. 直接用记录的坐标：
    - auto_reply --x 坐标1 --y 坐标1 --message "回复A"
+   - update_preview_after_reply --name "A"  ← 回复后立即更新预览
    - auto_reply --x 坐标2 --y 坐标2 --message "回复B"
+   - update_preview_after_reply --name "B"  ← 回复后立即更新预览
    - auto_reply --x 坐标3 --y 坐标3 --message "回复C"
-4. 回复完成后，一次性更新所有联系人状态
+   - update_preview_after_reply --name "C"  ← 回复后立即更新预览
 ```
 
-**⚠️ 左侧列表坐标计算的稳定性**
+**⚠️ 点击坐标已自动计算**
 
 ```
-左侧聊天列表的特点：
-1. 列表宽度使用固定宽度 + 动态调整（约 250px）
-2. 每个联系人项高度约 60-80 像素
-3. 点击坐标：X = window_left + 列表宽度 * 0.5，Y = 从 OCR 结果中获取
+check_new_messages() 返回的每个联系人已包含：
+- screen_x: 屏幕绝对X坐标（可直接用于点击）
+- screen_y: 屏幕绝对Y坐标（可直接用于点击）
 
-坐标计算方法：
-1. 从 OCR 结果中找到联系人名称文本
-2. 获取该文本的 Y 坐标中心点：Y = (box[0][1] + box[2][1]) / 2
-3. 点击坐标：X = window_rect.left + 150（固定偏移），Y = Y
-
-注意：
-- 即使右侧窗口变化，左侧列表的相对位置不会大变
-- 但如果回复后联系人上移（因为最新消息），需要重新 OCR 获取新坐标
+使用方法：
+click_contact --x contact["screen_x"] --y contact["screen_y"]
+auto_reply --x contact["screen_x"] --y contact["screen_y"] --message "回复内容"
 ```
 
 ---
@@ -968,6 +1006,7 @@ save_contact_state --name "李四" --state '{"last_message":"我: 好的","sende
 7. **消息来源判断**：通过右侧聊天窗口的气泡位置判断，X > 60% 是我发的，X < 50% 是对方发的
 8. **聊天记录持久化**：聊天记录保存在 `wechat_chat_records.json` 文件中
 9. **定时任务初始化**：设置定时任务时必须先调用 `reset_chat_records` 初始化
-10. **批量处理**：依次点击前5个联系人，记录坐标后批量回复，中间不要再获取 OCR
+10. **批量处理**：check_new_messages 返回所有联系人和坐标，批量处理新消息，中间不要再获取 OCR
 11. **中文编码**：脚本输出使用 GBK 编码，适配 Windows CMD 环境
 12. **跳过联系人**：文件传输助手、公众号、微信支付等不需要回复
+13. **回复后更新预览**：⚠️ 回复消息后必须调用 `update_preview_after_reply` 更新预览，防止自己的回复变成预览导致下次误判为新消息
