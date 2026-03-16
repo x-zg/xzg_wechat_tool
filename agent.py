@@ -61,61 +61,109 @@ class WeChatManager:
     """微信客户端管理器"""
     
     WAKE_UP_HOTKEY = ('ctrl', 'alt', 'w')
-    STATE_FILE = "wechat_contact_states.json"  # 状态持久化文件
-    
+    STATE_FILE = "wechat_chat_records.json"  # 聊天记录持久化文件
+
+    # 跳过的联系人类型
+    SKIP_CONTACTS = [
+        "文件传输助手", "File Transfer", "文件传输",
+        "公众号", "服务号", "微信支付",
+        "腾讯", "系统", "官方"
+    ]
+
     def __init__(self):
         self._app = None
         self._window = None
         self._gw_window = None  # pygetwindow 窗口
-        self._contact_states = {}  # 记录每个联系人的状态 {name: {"last_message": "...", "replied": True}}
-        self._load_states()  # 启动时加载状态
-    
+        # 聊天记录状态 {contacts_order: [...], contacts: {name: {last_opponent_message, ...}}}
+        self._chat_records = {}
+        self._load_records()  # 启动时加载记录
+
     def _get_state_file_path(self) -> str:
         """获取状态文件路径"""
         # 状态文件保存在agent.py所在目录
         script_dir = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(script_dir, self.STATE_FILE)
-    
-    def _load_states(self):
-        """从文件加载联系人状态"""
+
+    def _load_records(self):
+        """从文件加载聊天记录"""
         try:
             state_file = self._get_state_file_path()
             if os.path.exists(state_file):
                 with open(state_file, 'r', encoding='utf-8') as f:
-                    self._contact_states = json.load(f)
+                    self._chat_records = json.load(f)
         except Exception as e:
-            logger.debug(f"加载联系人状态失败: {e}")
-            self._contact_states = {}
-    
-    def _save_states(self):
-        """保存联系人状态到文件"""
+            logger.debug(f"加载聊天记录失败: {e}")
+            self._chat_records = {}
+
+    def _save_records(self):
+        """保存聊天记录到文件"""
         try:
             state_file = self._get_state_file_path()
             with open(state_file, 'w', encoding='utf-8') as f:
-                json.dump(self._contact_states, f, ensure_ascii=False, indent=2)
+                json.dump(self._chat_records, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.debug(f"保存联系人状态失败: {e}")
+            logger.debug(f"保存聊天记录失败: {e}")
 
     def _find_gw_window(self) -> Optional[Any]:
         """使用 pygetwindow 查找微信窗口"""
         # 微信窗口标题通常是：微信、WeChat、Weixin，或者以这些开头的标题
-        # 排除包含 "agent.py" 或当前脚本路径的窗口
+        # 排除 IDE/编辑器窗口
         script_name = os.path.basename(__file__).lower()
+        
+        # IDE 和编辑器关键词（用于排除）
+        IDE_KEYWORDS = [".py", "pycharm", "idea", "vscode", "visual studio", 
+                        "sublime", "atom", "notepad", "editor", "ide"]
 
         for keyword in ["微信", "WeChat", "Weixin"]:
             windows = gw.getWindowsWithTitle(keyword)
             for w in windows:
                 title_lower = w.title.lower()
-                # 排除 IDE/编辑器窗口（包含脚本名或路径）
+                
+                # 排除脚本名或 agent.py
                 if script_name in title_lower or "agent.py" in title_lower:
+                    logger.debug(f"跳过脚本相关窗口: title={w.title}")
+                    continue
+                
+                # 排除 IDE/编辑器窗口
+                is_ide = False
+                for ide_keyword in IDE_KEYWORDS:
+                    if ide_keyword in title_lower:
+                        # 特殊处理：微信标题可能包含这些词（罕见），但尺寸应该匹配
+                        is_ide = True
+                        break
+                
+                if is_ide:
                     logger.debug(f"跳过 IDE 窗口: title={w.title}")
                     continue
-                # 放宽窗口尺寸限制：宽度 > 200 且高度 > 200
-                if w.width > 200 and w.height > 200:
+                
+                # 微信窗口特征：尺寸较大，且标题通常是 "微信" 或 "WeChat"
+                # 允许标题以微信关键词开头
+                title_starts_with_keyword = title_lower.startswith(keyword.lower())
+                
+                # 如果标题以关键词开头，直接接受
+                if title_starts_with_keyword and w.width > 200 and w.height > 200:
                     logger.debug(f"找到微信窗口: title={w.title}, size=({w.width}x{w.height})")
                     return w
-                else:
-                    logger.debug(f"跳过窗口(尺寸过小): title={w.title}, size=({w.width}x{w.height})")
+                
+                # 否则，检查窗口类名（微信主窗口类名：WeChatMainWndForPC）
+                try:
+                    hwnd = w._hWnd if hasattr(w, '_hWnd') else None
+                    if hwnd:
+                        class_name = win32gui.GetClassName(hwnd)
+                        if "WeChat" in class_name or "wechat" in class_name.lower():
+                            if w.width > 200 and w.height > 200:
+                                logger.debug(f"找到微信窗口(类名匹配): title={w.title}, class={class_name}")
+                                return w
+                except Exception:
+                    pass
+                
+                # 最后：如果标题完全是关键词（精确匹配）
+                if title_lower.strip() in ["微信", "wechat", "weixin"]:
+                    if w.width > 200 and w.height > 200:
+                        logger.debug(f"找到微信窗口(精确匹配): title={w.title}")
+                        return w
+                    
+                logger.debug(f"跳过窗口(不匹配): title={w.title}, size=({w.width}x{w.height})")
         return None
 
     def _is_window_visible(self, w) -> bool:
@@ -983,36 +1031,234 @@ class WeChatManager:
             logger.error(f"自动回复失败: {e}")
             return {"status": "error", "message": f"自动回复失败: {str(e)}"}
 
+    def _should_skip_contact(self, contact_name: str) -> bool:
+        """判断是否应该跳过此联系人"""
+        if not contact_name:
+            return True
+        contact_lower = contact_name.lower()
+        for skip in self.SKIP_CONTACTS:
+            if skip.lower() in contact_lower:
+                return True
+        return False
+
+    # ==================== 布局常量（适应不同窗口大小）====================
+    # 微信左侧联系人列表宽度约 230px，这里使用固定宽度 + 动态调整
+    LEFT_LIST_WIDTH = 250          # 左侧联系人列表宽度（固定）
+    LEFT_LIST_MIN_RATIO = 0.25     # 最小比例（小窗口时）
+    LEFT_LIST_MAX_RATIO = 0.35     # 最大比例（大窗口时）
+
+    # 消息区域参数
+    CHAT_AREA_MARGIN = 60          # 聊天区域边距
+    OPPONENT_MSG_RATIO_MAX = 0.60  # 对方消息 X 坐标最大比例
+    CHAT_BOTTOM_MARGIN = 80        # 聊天区域底部边距
+
+    def _get_left_boundary(self, window_width: int) -> int:
+        """计算左侧联系人列表边界（适应不同窗口大小）
+
+        微信左侧联系人列表宽度固定约 230px，
+        小窗口时使用比例，大窗口时使用固定宽度。
+        """
+        # 计算固定宽度边界
+        fixed_boundary = self.LEFT_LIST_WIDTH
+
+        # 计算比例边界
+        ratio_boundary = int(window_width * self.LEFT_LIST_MIN_RATIO)
+
+        # 计算最大比例边界
+        max_ratio_boundary = int(window_width * self.LEFT_LIST_MAX_RATIO)
+
+        # 选择策略：
+        # - 小窗口（<700px）：使用比例，避免左侧列表占用太多空间
+        # - 中等窗口（700-900px）：使用固定宽度
+        # - 大窗口（>900px）：使用固定宽度，但不超过最大比例
+        if window_width < 700:
+            return ratio_boundary
+        elif window_width < 900:
+            return fixed_boundary
+        else:
+            return min(fixed_boundary, max_ratio_boundary)
+
+    def parse_contacts_from_ocr(self, ocr_results: list, window_width: int) -> list:
+        """从 OCR 结果中解析联系人列表
+
+        Args:
+            ocr_results: OCR 识别结果列表
+            window_width: 窗口宽度
+
+        Returns:
+            list: 联系人列表 [{"name": "张三", "x": 125, "y": 200}, ...]
+        """
+        # 计算左侧边界
+        left_boundary = self._get_left_boundary(window_width)
+
+        # 过滤左侧区域的文本
+        left_texts = []
+        for item in ocr_results:
+            pos = item.get('position', {})
+            x = pos.get('x', 0)
+            y = pos.get('y', 0)
+            text = item.get('text', '')
+
+            # 只取左侧区域，排除头像区域（X > 50）
+            if 50 < x < left_boundary:
+                # 排除搜索框
+                if '搜索' in text:
+                    continue
+                # 排除纯时间格式
+                if len(text) <= 12 and (text.count(':') == 1 or '昨天' in text or '前天' in text or '周' in text):
+                    continue
+                left_texts.append({'x': x, 'y': y, 'text': text})
+
+        # 按 Y 坐标排序
+        left_texts.sort(key=lambda t: t['y'])
+
+        # 分组：每个联系人条目高度约 64 像素
+        # Y 坐标差距小于 30 的认为是同一组（名称+预览消息）
+        groups = []
+        current_group = []
+        prev_y = -100
+
+        for item in left_texts:
+            if item['y'] - prev_y > 30:  # 新的一组
+                if current_group:
+                    groups.append(current_group)
+                current_group = [item]
+            else:  # 同一组
+                current_group.append(item)
+            prev_y = item['y']
+
+        if current_group:
+            groups.append(current_group)
+
+        # 从每组中提取联系人名称（Y 坐标最小的）
+        contacts = []
+        for group in groups:
+            group.sort(key=lambda t: t['y'])
+            name_item = group[0]
+
+            # 检查是否应该跳过
+            if not self._should_skip_contact(name_item['text']):
+                # 长度限制：联系人名称通常 1-20 个字符
+                if 1 <= len(name_item['text']) <= 20:
+                    contacts.append({
+                        'name': name_item['text'],
+                        'x': name_item['x'],
+                        'y': name_item['y']
+                    })
+
+        return contacts
+
+    def parse_opponent_message_from_ocr(self, ocr_results: list, window_width: int, window_height: int) -> str:
+        """从 OCR 结果中解析对方的最后一条消息
+
+        Args:
+            ocr_results: OCR 识别结果列表
+            window_width: 窗口宽度
+            window_height: 窗口高度
+
+        Returns:
+            str: 对方最后一条消息
+        """
+        import re
+
+        # 计算区域边界
+        left_boundary = self._get_left_boundary(window_width)
+        chat_area_left = left_boundary
+
+        # 对方消息的 X 坐标范围
+        opponent_x_min = chat_area_left + self.CHAT_AREA_MARGIN
+        opponent_x_max = int(window_width * self.OPPONENT_MSG_RATIO_MAX)
+
+        # 聊天区域底部（排除输入框）
+        chat_area_bottom = window_height - self.CHAT_BOTTOM_MARGIN
+
+        # 过滤对方消息
+        opponent_msgs = []
+        for item in ocr_results:
+            pos = item.get('position', {})
+            x = pos.get('x', 0)
+            y = pos.get('y', 0)
+            text = item.get('text', '')
+            confidence = item.get('confidence', 0)
+
+            # 在对方消息区域内
+            if opponent_x_min < x < opponent_x_max:
+                # 排除底部输入区域
+                if y < chat_area_bottom:
+                    # 检查是否是有效消息
+                    if self._is_valid_message(text, confidence):
+                        opponent_msgs.append({'x': x, 'y': y, 'text': text, 'confidence': confidence})
+
+        # 按 Y 坐标排序，取最后一条
+        if opponent_msgs:
+            opponent_msgs.sort(key=lambda t: t['y'])
+            return opponent_msgs[-1]['text']
+
+        return ""
+
+    def _is_valid_message(self, text: str, confidence: float) -> bool:
+        """判断是否是有效的消息文本"""
+        import re
+
+        # 1. 置信度太低可能是乱码
+        if confidence < 0.85:
+            return False
+
+        # 2. 长度太短可能是误识别
+        if len(text) < 2:
+            return False
+
+        # 3. 包含特殊字符组合（OCR 乱码特征）
+        garbage_patterns = [
+            r'^[@→※口\-\+\*\#\!\?\.\,]+$',  # 纯特殊字符
+            r'^.*[→※].*$',  # 包含箭头等特殊符号
+            r'^\d+[\"\'].*',  # "4\" (" 这种格式
+            r'^[\d\.\,]+$',  # 纯数字
+        ]
+        for pattern in garbage_patterns:
+            if re.match(pattern, text):
+                return False
+
+        # 4. 时间格式
+        if re.match(r'^昨天\d', text) or re.match(r'^前天\d', text):
+            return False
+        if re.match(r'^\d{1,2}:\d{2}$', text):
+            return False
+
+        # 5. 系统关键词
+        if text in ['发送（S)', '发送(S)', '发送']:
+            return False
+
+        return True
+
     def check_new_messages(self) -> Dict:
         """检查微信窗口状态，返回OCR结果供AI判断
 
-        直接返回OCR识别的原始结果，由AI来判断是否有新消息以及联系人信息。
-        不再在代码中解析，避免窗口大小变化导致的坐标判断问题。
+        返回OCR识别的原始结果，由AI来判断联系人信息和聊天记录。
 
         Returns:
             Dict: {
                 "status": "success",
                 "data": {
-                    "ocr_results": [...],  # OCR识别结果
-                    "window_rect": {...},  # 窗口位置
-                    "total": 10,  # OCR结果数量
-                    "is_first_init": True/False  # 是否是首次初始化（用于定时任务）
+                    "ocr_results": [...],
+                    "window_rect": {...},
+                    "total": 10,
+                    "saved_contacts_order": [...],  # 上次保存的联系人顺序
+                    "is_first_init": True/False
                 }
             }
         """
         try:
-            # ===== 跟踪是否是首次初始化 =====
-            is_first_init = len(self._contact_states) == 0
-            
-            # 首次初始化时，标记一个标记位（用于后续判断）
-            if is_first_init:
-                self._contact_states["__initialized__"] = True
-                self._save_states()
-
             # 获取OCR结果
             ocr_result = self.get_chat_list()
             if ocr_result["status"] != "success":
                 return ocr_result
+
+            # 检查是否是首次初始化（没有保存过聊天记录）
+            is_first_init = len(self._chat_records) == 0
+
+            # 获取上次保存的联系人顺序
+            saved_contacts_order = self._chat_records.get("contacts_order", [])
 
             return {
                 "status": "success",
@@ -1020,6 +1266,7 @@ class WeChatManager:
                     "ocr_results": ocr_result["data"]["ocr_results"],
                     "window_rect": ocr_result["data"]["window_rect"],
                     "total": ocr_result["data"]["total"],
+                    "saved_contacts_order": saved_contacts_order,
                     "is_first_init": is_first_init
                 }
             }
@@ -1028,26 +1275,26 @@ class WeChatManager:
             logger.error(f"检查新消息失败: {e}")
             return {"status": "error", "message": f"检查新消息失败: {str(e)}"}
 
-    def get_contact_states(self) -> Dict:
-        """获取当前所有联系人的状态"""
+    def get_chat_records(self) -> Dict:
+        """获取当前所有联系人的聊天记录"""
         return {
             "status": "success",
             "data": {
-                "contact_states": self._contact_states,
-                "total": len(self._contact_states)
+                "chat_records": self._chat_records,
+                "contacts_order": self._chat_records.get("contacts_order", []),
+                "total": len(self._chat_records.get("contacts_order", []))
             }
         }
 
-    def save_contact_state(self, contact_name: str, state: dict) -> Dict:
-        """保存单个联系人的状态（供AI调用）
+    def save_chat_record(self, contact_name: str, last_opponent_message: str,
+                         last_opponent_time: str = None, contact_order: int = None) -> Dict:
+        """保存单个联系人的聊天记录
 
         Args:
             contact_name: 联系人名称
-            state: 状态字典，可包含：
-                - last_message: 最后一条消息内容
-                - last_message_time: 最后消息时间
-                - replied: 是否已回复
-                - custom: 自定义数据
+            last_opponent_message: 对方发的最后一条消息
+            last_opponent_time: 消息时间
+            contact_order: 联系人在列表中的顺序（0-4）
 
         Returns:
             Dict: {"status": "success/error", "message": "..."}
@@ -1055,38 +1302,97 @@ class WeChatManager:
         if not contact_name:
             return {"status": "error", "message": "请提供联系人名称"}
 
-        self._contact_states[contact_name] = state
-        self._save_states()
+        # 初始化 contacts 字典
+        if "contacts" not in self._chat_records:
+            self._chat_records["contacts"] = {}
 
-        return {"status": "success", "message": f"已保存联系人 '{contact_name}' 的状态"}
+        # 保存联系人聊天记录
+        self._chat_records["contacts"][contact_name] = {
+            "last_opponent_message": last_opponent_message,
+            "last_opponent_time": last_opponent_time or ""
+        }
 
-    def get_contact_state(self, contact_name: str) -> Dict:
-        """获取单个联系人的状态（供AI调用）
+        # 更新联系人顺序
+        if contact_order is not None:
+            if "contacts_order" not in self._chat_records:
+                self._chat_records["contacts_order"] = []
+            # 确保列表长度足够
+            while len(self._chat_records["contacts_order"]) <= contact_order:
+                self._chat_records["contacts_order"].append(None)
+            self._chat_records["contacts_order"][contact_order] = contact_name
+
+        self._save_records()
+        return {"status": "success", "message": f"已保存联系人 '{contact_name}' 的聊天记录"}
+
+    def get_chat_record(self, contact_name: str) -> Dict:
+        """获取单个联系人的聊天记录
 
         Args:
             contact_name: 联系人名称
 
         Returns:
-            Dict: {"status": "success", "data": {"state": {...}, "exists": true/false}}
+            Dict: {"status": "success", "data": {"contact_name": "...", "record": {...}, "exists": true/false}}
         """
         if not contact_name:
             return {"status": "error", "message": "请提供联系人名称"}
 
-        state = self._contact_states.get(contact_name)
+        contacts = self._chat_records.get("contacts", {})
+        record = contacts.get(contact_name)
+
         return {
             "status": "success",
             "data": {
                 "contact_name": contact_name,
-                "state": state,
-                "exists": contact_name in self._contact_states
+                "record": record,
+                "exists": contact_name in contacts
             }
         }
 
+    def update_contacts_order(self, contacts_order: list) -> Dict:
+        """更新联系人顺序列表
+
+        Args:
+            contacts_order: 联系人名称列表，按顺序排列
+
+        Returns:
+            Dict: {"status": "success/error", "message": "..."}
+        """
+        self._chat_records["contacts_order"] = contacts_order
+        self._save_records()
+        return {"status": "success", "message": f"已更新联系人顺序，共 {len(contacts_order)} 人"}
+
+    def reset_chat_records(self) -> Dict:
+        """重置所有聊天记录（删除本地文件）"""
+        self._chat_records = {}
+        # 删除本地文件
+        try:
+            state_file = self._get_state_file_path()
+            if os.path.exists(state_file):
+                os.remove(state_file)
+        except Exception as e:
+            logger.debug(f"删除聊天记录文件失败: {e}")
+        return {"status": "success", "message": "已重置所有聊天记录"}
+
+    # 兼容旧接口
+    def get_contact_states(self) -> Dict:
+        """获取当前所有联系人的状态（兼容旧接口）"""
+        return self.get_chat_records()
+
+    def save_contact_state(self, contact_name: str, state: dict) -> Dict:
+        """保存单个联系人的状态（兼容旧接口）"""
+        return self.save_chat_record(
+            contact_name=contact_name,
+            last_opponent_message=state.get("last_message", ""),
+            last_opponent_time=state.get("last_time", "")
+        )
+
+    def get_contact_state(self, contact_name: str) -> Dict:
+        """获取单个联系人的状态（兼容旧接口）"""
+        return self.get_chat_record(contact_name=contact_name)
+
     def reset_contact_states(self) -> Dict:
-        """重置所有联系人状态"""
-        self._contact_states = {}
-        self._save_states()  # 保存空状态
-        return {"status": "success", "message": "已重置所有联系人状态"}
+        """重置所有联系人状态（兼容旧接口）"""
+        return self.reset_chat_records()
 
 
 # 全局管理器实例
@@ -1161,6 +1467,32 @@ def check_new_messages():
     """检查是否有新消息"""
     return _manager.check_new_messages()
 
+def get_chat_records():
+    """获取所有联系人聊天记录"""
+    return _manager.get_chat_records()
+
+def save_chat_record(contact_name, last_opponent_message, last_opponent_time=None, contact_order=None):
+    """保存单个联系人聊天记录"""
+    return _manager.save_chat_record(
+        contact_name=contact_name,
+        last_opponent_message=last_opponent_message,
+        last_opponent_time=last_opponent_time,
+        contact_order=contact_order
+    )
+
+def get_chat_record(contact_name):
+    """获取单个联系人聊天记录"""
+    return _manager.get_chat_record(contact_name=contact_name)
+
+def update_contacts_order(contacts_order):
+    """更新联系人顺序"""
+    return _manager.update_contacts_order(contacts_order=contacts_order)
+
+def reset_chat_records():
+    """重置所有聊天记录"""
+    return _manager.reset_chat_records()
+
+# 兼容旧接口
 def get_contact_states():
     """获取联系人状态"""
     return _manager.get_contact_states()
@@ -1243,6 +1575,28 @@ if __name__ == "__main__":
     # check_new_messages
     subparsers.add_parser("check_new_messages", help="检查是否有新消息")
 
+    # get_chat_records
+    subparsers.add_parser("get_chat_records", help="获取所有联系人聊天记录")
+
+    # save_chat_record
+    p_save_record = subparsers.add_parser("save_chat_record", help="保存单个联系人聊天记录")
+    p_save_record.add_argument("--name", type=str, required=True, help="联系人名称")
+    p_save_record.add_argument("--message", type=str, required=True, help="对方最后一条消息")
+    p_save_record.add_argument("--time", type=str, default="", help="消息时间")
+    p_save_record.add_argument("--order", type=int, default=None, help="联系人顺序(0-4)")
+
+    # get_chat_record
+    p_get_record = subparsers.add_parser("get_chat_record", help="获取单个联系人聊天记录")
+    p_get_record.add_argument("--name", type=str, required=True, help="联系人名称")
+
+    # update_contacts_order
+    p_update_order = subparsers.add_parser("update_contacts_order", help="更新联系人顺序")
+    p_update_order.add_argument("--order", type=str, required=True, help="联系人顺序JSON数组")
+
+    # reset_chat_records
+    subparsers.add_parser("reset_chat_records", help="重置所有聊天记录")
+
+    # 兼容旧接口
     # get_contact_states
     subparsers.add_parser("get_contact_states", help="获取联系人状态")
 
@@ -1308,6 +1662,25 @@ if __name__ == "__main__":
         result = auto_reply(position=position, message=args.message)
     elif args.action == "check_new_messages":
         result = check_new_messages()
+    elif args.action == "get_chat_records":
+        result = get_chat_records()
+    elif args.action == "save_chat_record":
+        result = save_chat_record(
+            contact_name=args.name,
+            last_opponent_message=args.message,
+            last_opponent_time=args.time,
+            contact_order=args.order
+        )
+    elif args.action == "get_chat_record":
+        result = get_chat_record(contact_name=args.name)
+    elif args.action == "update_contacts_order":
+        try:
+            order_list = json.loads(args.order)
+            result = update_contacts_order(contacts_order=order_list)
+        except json.JSONDecodeError:
+            result = {"status": "error", "message": "order 参数必须是有效的 JSON 数组"}
+    elif args.action == "reset_chat_records":
+        result = reset_chat_records()
     elif args.action == "get_contact_states":
         result = get_contact_states()
     elif args.action == "save_contact_state":
