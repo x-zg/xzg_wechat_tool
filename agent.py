@@ -9,18 +9,14 @@ import sys
 import io
 import os
 
-# ============== 强制统一编码为 UTF-8（解决 Windows 控制台编码问题）==============
+# ============== 统一编码处理（解决 Windows 控制台编码问题）==============
+# Windows CMD/PowerShell 默认使用 GBK (代码页 936)
+_OUTPUT_ENCODING = 'gbk'
+
 if sys.platform == 'win32':
-    # 强制 stdout/stderr 为 UTF-8
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    # 设置控制台代码页为 UTF-8
-    try:
-        import ctypes
-        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
-        ctypes.windll.kernel32.SetConsoleCP(65001)
-    except Exception:
-        pass
+    # 强制 stdout/stderr 为 GBK，适配 Windows CMD
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='gbk', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='gbk', errors='replace')
 
 import base64
 import time
