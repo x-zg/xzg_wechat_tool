@@ -582,7 +582,7 @@ python {baseDir}/agent.py verify_chat_window --expected_name "张三"
 
 **用途：**
 - 点击联系人进入聊天窗口后，验证是否进入了正确的对话框
-- 支持部分匹配（如 "CF-李壮" 匹配 "CF-李壮@百博电商"）
+- 支持部分匹配（如 "CF-李四" 匹配 "CF-李四@千帆电商"）
 
 ---
 
