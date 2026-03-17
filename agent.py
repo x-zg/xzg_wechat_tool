@@ -11,8 +11,11 @@ import os
 
 # ============== 统一编码处理（解决 Windows 控制台编码问题）==============
 if sys.platform == 'win32':
+    # 1. 先包装 stdout/stderr 为 UTF-8（关键！解决 print 输出乱码）
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    # 2. 再设置控制台代码页为 UTF-8
     import ctypes
-    # 使用 Windows API 设置控制台代码页为 UTF-8
     kernel32 = ctypes.windll.kernel32
     kernel32.SetConsoleOutputCP(65001)
     kernel32.SetConsoleCP(65001)
