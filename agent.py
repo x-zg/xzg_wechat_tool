@@ -1628,14 +1628,15 @@ class WeChatManager:
             }
         }
 
-    def update_preview_after_reply(self, contact_name: str) -> Dict:
+    def update_preview_after_reply(self, contact_name: str, reply_message: str = None) -> Dict:
         """回复完成后更新联系人的预览消息
 
-        重要：在回复消息后调用此方法，重新OCR获取当前预览消息并更新记录。
-        防止自己的回复消息变成预览后，下次检测时误判为新消息。
+        重要：在回复消息后调用此方法，记录已回复的内容。
+        下次检测时会跳过包含此内容的预览，防止误判。
 
         Args:
             contact_name: 联系人名称
+            reply_message: 回复的消息内容（可选，用于标记已回复）
 
         Returns:
             Dict: {"status": "success/error", "data": {"preview": "新的预览消息", "time": "时间"}}
@@ -1666,14 +1667,24 @@ class WeChatManager:
 
             if not target_contact:
                 # 如果找不到，可能联系人已不在当前显示范围
-                # 保持原记录不变，返回警告
+                # 使用回复消息作为标记
+                if reply_message:
+                    if "contacts" not in self._chat_records:
+                        self._chat_records["contacts"] = {}
+                    self._chat_records["contacts"][contact_name] = {
+                        "last_opponent_message": "",  # 清空，表示已处理
+                        "last_opponent_time": "",
+                        "last_reply_message": reply_message,  # 记录自己的回复
+                        "last_update_time": time.strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    self._save_records()
                 return {
                     "status": "warning",
-                    "message": f"未在当前列表找到联系人 '{contact_name}'，保持原记录不变",
-                    "data": {"contact_name": contact_name}
+                    "message": f"未在当前列表找到联系人 '{contact_name}'，已记录回复内容",
+                    "data": {"contact_name": contact_name, "reply_message": reply_message}
                 }
 
-            # 5. 更新预览消息和时间
+            # 5. 获取新的预览消息和时间
             new_preview = target_contact.get('preview', '')
             new_time = target_contact.get('time', '')
 
@@ -1681,25 +1692,28 @@ class WeChatManager:
             if "contacts" not in self._chat_records:
                 self._chat_records["contacts"] = {}
 
-            # 保留原有的其他字段，只更新预览和时间
-            existing_record = self._chat_records["contacts"].get(contact_name, {})
+            # 保存当前状态，标记这是自己回复后的预览
+            # 如果预览包含自己的回复内容，说明对方还没回复
             self._chat_records["contacts"][contact_name] = {
-                "last_opponent_message": new_preview,  # 用新预览更新
+                "last_opponent_message": "",  # 清空对方消息，表示已处理
                 "last_opponent_time": new_time,
+                "last_preview": new_preview,  # 记录当前预览
+                "last_reply_message": reply_message or "",  # 记录自己的回复
                 "last_update_time": time.strftime("%Y-%m-%d %H:%M:%S")
             }
 
             self._save_records()
 
-            logger.info(f"已更新联系人 '{contact_name}' 的预览: {new_preview}")
+            logger.info(f"已更新联系人 '{contact_name}' 的状态，预览: {new_preview}")
 
             return {
                 "status": "success",
-                "message": f"已更新联系人 '{contact_name}' 的预览消息",
+                "message": f"已更新联系人 '{contact_name}' 的状态",
                 "data": {
                     "contact_name": contact_name,
                     "preview": new_preview,
-                    "time": new_time
+                    "time": new_time,
+                    "reply_message": reply_message
                 }
             }
 
@@ -1847,9 +1861,9 @@ def get_chat_record(contact_name):
     """获取单个联系人聊天记录"""
     return _manager.get_chat_record(contact_name=contact_name)
 
-def update_preview_after_reply(contact_name):
+def update_preview_after_reply(contact_name, reply_message=None):
     """回复完成后更新联系人的预览消息（防止误判）"""
-    return _manager.update_preview_after_reply(contact_name=contact_name)
+    return _manager.update_preview_after_reply(contact_name=contact_name, reply_message=reply_message)
 
 def update_contacts_order(contacts_order):
     """更新联系人顺序"""
@@ -1959,6 +1973,7 @@ if __name__ == "__main__":
     # update_preview_after_reply
     p_update_preview = subparsers.add_parser("update_preview_after_reply", help="回复完成后更新预览消息")
     p_update_preview.add_argument("--name", type=str, required=True, help="联系人名称")
+    p_update_preview.add_argument("--reply_message", type=str, default=None, help="回复的消息内容")
 
     # update_contacts_order
     p_update_order = subparsers.add_parser("update_contacts_order", help="更新联系人顺序")
@@ -2049,7 +2064,7 @@ if __name__ == "__main__":
     elif args.action == "get_chat_record":
         result = get_chat_record(contact_name=args.name)
     elif args.action == "update_preview_after_reply":
-        result = update_preview_after_reply(contact_name=args.name)
+        result = update_preview_after_reply(contact_name=args.name, reply_message=args.reply_message)
     elif args.action == "update_contacts_order":
         try:
             order_list = json.loads(args.order)
