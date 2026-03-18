@@ -482,6 +482,7 @@ python {baseDir}/agent.py update_preview_after_reply --name "张三" --reply_mes
 |||| 参数名 | 类型 | 必需 | 默认值 | 说明 |
 ||||--------|------|------|--------|------|
 |||| --name | string | **是** | 无 | 联系人名称 |
+|||| --reply_message | string | **是** | 无 | 回复的消息内容（用于防止下次误判） |
 
 **返回值：**
 ```json
@@ -798,16 +799,18 @@ python {baseDir}/agent.py verify_chat_window --expected_name "张三"
 
 步骤3: 对比预览消息（重要：防止误判自己发送的消息）
 
-  ⚠️ 预览消息会被截断！微信列表预览只显示约20-30字，需使用"包含匹配"
+  ⚠️ 预览消息会被截断！使用前8个字符进行判断
 
   对每个联系人：
     a. 检查联系人名称是否在 saved_records["contacts"] 中
     b. 如果不存在 → 新联系人，当做新消息处理
-    c. 如果存在 → 检查 last_reply_message 字段
-       - 如果 last_opponent_message 为空，说明上次已处理，不是新消息
-       - 如果 preview 被 last_reply_message 包含（预览是回复的开头部分），说明是自己发的，不是新消息
-       - 例如：reply_message="今天天气真好，阳光明媚"，preview="今天天气真好..." → 匹配，不是新消息
-    d. 只有当 last_opponent_message 非空，且 preview 与之不同时 → 有新消息
+    c. 如果存在 → 检查以下字段：
+       - 获取 last_preview（上次保存的预览前8字符）和 last_reply_preview（上次回复内容前8字符）
+       - 计算当前 preview 前8字符
+       - 如果 preview[:8] == last_preview → 预览没变，没有新消息
+       - 如果 preview[:8] == last_reply_preview → 是自己发的，没有新消息
+       - 否则 → 有新消息
+    d. ⚠️ 关键：对比前8字符，简单可靠
 
 步骤4: 批量处理新消息
   ⚠️ 重要：必须一次性处理所有新消息，中间不要再次获取OCR！

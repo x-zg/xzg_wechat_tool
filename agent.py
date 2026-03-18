@@ -661,7 +661,7 @@ class WeChatManager:
 
         # 2. 点击输入框（使用相对比例）
         input_x = rect["left"] + rect["width"] // 2
-        input_y = rect["bottom"] - int(rect["height"] * 0.15)  # 输入框在底部约8%位置
+        input_y = rect["bottom"] - int(rect["height"] * 0.35)  # 输入框在底部约8%位置
         self.click(input_x, input_y)
         time.sleep(0.2)
 
@@ -1693,12 +1693,15 @@ class WeChatManager:
                 self._chat_records["contacts"] = {}
 
             # 保存当前状态，标记这是自己回复后的预览
-            # 如果预览包含自己的回复内容，说明对方还没回复
+            # 使用前8字符进行判断（简单可靠）
+            preview_prefix = new_preview[:8] if new_preview else ""
+            reply_prefix = reply_message[:8] if reply_message else ""
+
             self._chat_records["contacts"][contact_name] = {
                 "last_opponent_message": "",  # 清空对方消息，表示已处理
                 "last_opponent_time": new_time,
-                "last_preview": new_preview,  # 记录当前预览
-                "last_reply_message": reply_message or "",  # 记录自己的回复
+                "last_preview": preview_prefix,  # 记录当前预览前8字符
+                "last_reply_preview": reply_prefix,  # 记录回复内容前8字符
                 "last_update_time": time.strftime("%Y-%m-%d %H:%M:%S")
             }
 
