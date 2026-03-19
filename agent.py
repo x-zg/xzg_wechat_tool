@@ -661,7 +661,7 @@ class WeChatManager:
 
         # 2. 点击输入框（使用相对比例）
         input_x = rect["left"] + rect["width"] // 2
-        input_y = rect["bottom"] - int(rect["height"] * 0.35)  # 输入框在底部约8%位置
+        input_y = rect["bottom"] - int(rect["height"] * 0.20)  # 输入框在底部约8%位置
         self.click(input_x, input_y)
         time.sleep(0.2)
 
